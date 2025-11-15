@@ -20,19 +20,21 @@ if (!process.env.OWNER_ID) {
 // Initialize bot with optimized settings for slow internet
 const bot = new TelegramBot(process.env.BOT_TOKEN, { 
   polling: {
-    interval: 3000, // Slower polling for slow internet (3 seconds)
+    interval: 5000, // Slower polling (5 seconds)
     autoStart: false,
     params: {
-      timeout: 60 // Increased timeout from 30 to 60 seconds
+      timeout: 120 // Increased timeout to 120 seconds for slow connection
     }
   },
   filepath: false,
   request: {
     agentOptions: {
       keepAlive: true,
-      keepAliveMsecs: 10000
+      keepAliveMsecs: 30000,
+      timeout: 120000 // 2 minutes timeout
     },
-    forever: true // Keep connections alive
+    forever: true,
+    timeout: 120000 // 2 minutes request timeout
   }
 });
 
@@ -1242,7 +1244,7 @@ bot.onText(/^!health/, async (msg) => {
 });
 
 // Retry helper for slow connections
-async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 2000) {
+async function retryWithBackoff(fn, maxRetries = 5, initialDelay = 3000) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       return await fn();
