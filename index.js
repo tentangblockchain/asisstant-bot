@@ -1,37 +1,62 @@
-// 🔥 BOT TELEGRAM - ADMIN & FILTER MANAGEMENT
-// Install dependencies: npm install node-telegram-bot-api dotenv
-// Buat file .env dan isi: BOT_TOKEN=token_bot_lu_anjir
 
+// 🔥 BOT TELEGRAM - ADMIN & FILTER MANAGEMENT (OPTIMIZED)
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const fs = require('fs');
+const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 
-// Initialize bot
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+// Initialize bot with optimized settings
+const bot = new TelegramBot(process.env.BOT_TOKEN, { 
+  polling: {
+    interval: 300,
+    autoStart: true,
+    params: {
+      timeout: 10
+    }
+  }
+});
 
-// Admin utama dari ENV (gak bisa dihapus anjir!)
 const OWNER_ID = parseInt(process.env.OWNER_ID);
-
-// Data files
 const ADMINS_FILE = path.join(__dirname, 'admins.json');
 const FILTERS_FILE = path.join(__dirname, 'filters.json');
 
-// Load data
-let admins = loadJSON(ADMINS_FILE, []);
-let filters = loadJSON(FILTERS_FILE, {});
+// In-memory cache
+let admins = [];
+let filters = {};
+let adminCache = new Set();
+let deleteTimers = new Map();
 
-// Pastikan owner selalu jadi admin
-if (OWNER_ID && !admins.includes(OWNER_ID)) {
-  admins.push(OWNER_ID);
-  saveJSON(ADMINS_FILE, admins);
+// Rate limiting
+const rateLimits = new Map();
+const RATE_LIMIT_WINDOW = 1000; // 1 second
+const MAX_REQUESTS = 5;
+
+// Initialize data asynchronously
+async function initializeData() {
+  try {
+    admins = await loadJSON(ADMINS_FILE, []);
+    filters = await loadJSON(FILTERS_FILE, {});
+    
+    if (OWNER_ID && !admins.includes(OWNER_ID)) {
+      admins.push(OWNER_ID);
+      await saveJSON(ADMINS_FILE, admins);
+    }
+    
+    // Build admin cache
+    adminCache = new Set(admins);
+    console.log('✅ Data initialized successfully');
+  } catch (err) {
+    console.error('❌ Initialization error:', err);
+  }
 }
 
-// Helper functions
-function loadJSON(file, defaultValue) {
+// Async JSON operations
+async function loadJSON(file, defaultValue) {
   try {
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (fsSync.existsSync(file)) {
+      const data = await fs.readFile(file, 'utf8');
+      return JSON.parse(data);
     }
   } catch (err) {
     console.error(`Error loading ${file}:`, err);
@@ -39,9 +64,9 @@ function loadJSON(file, defaultValue) {
   return defaultValue;
 }
 
-function saveJSON(file, data) {
+async function saveJSON(file, data) {
   try {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    await fs.writeFile(file, JSON.stringify(data, null, 2));
     return true;
   } catch (err) {
     console.error(`Error saving ${file}:`, err);
@@ -49,29 +74,50 @@ function saveJSON(file, data) {
   }
 }
 
+// Optimized admin check with cache
 function isAdmin(userId) {
-  return userId === OWNER_ID || admins.includes(userId);
+  return userId === OWNER_ID || adminCache.has(userId);
 }
 
 function isOwner(userId) {
   return userId === OWNER_ID;
 }
 
-function getUserMention(user) {
-  if (user.username) {
-    return `@${user.username}`;
+// Rate limiting
+function checkRateLimit(userId) {
+  const now = Date.now();
+  const userLimits = rateLimits.get(userId) || [];
+  
+  // Remove old entries
+  const validLimits = userLimits.filter(time => now - time < RATE_LIMIT_WINDOW);
+  
+  if (validLimits.length >= MAX_REQUESTS) {
+    return false;
   }
-  return `[${user.first_name}](tg://user?id=${user.id})`;
+  
+  validLimits.push(now);
+  rateLimits.set(userId, validLimits);
+  return true;
 }
 
-// Auto delete message after delay
-async function autoDeleteMessage(chatId, messageId, delayMinutes = 3) {
-  setTimeout(() => {
+// Optimized auto-delete with cleanup
+function autoDeleteMessage(chatId, messageId, delayMinutes = 3) {
+  const key = `${chatId}_${messageId}`;
+  
+  // Clear existing timer if any
+  if (deleteTimers.has(key)) {
+    clearTimeout(deleteTimers.get(key));
+  }
+  
+  const timer = setTimeout(() => {
     bot.deleteMessage(chatId, messageId).catch(() => {});
+    deleteTimers.delete(key);
   }, delayMinutes * 60 * 1000);
+  
+  deleteTimers.set(key, timer);
 }
 
-// Pagination helper
+// Pagination (no change needed, already efficient)
 function createPagination(items, page, itemsPerPage = 10) {
   const totalPages = Math.ceil(items.length / itemsPerPage);
   const start = (page - 1) * itemsPerPage;
@@ -103,12 +149,11 @@ function createPaginationKeyboard(currentPage, totalPages, prefix) {
 }
 
 // 👑 ADMIN COMMANDS
-bot.onText(/\/addadmin(?:@\w+)?\s+@?(\w+)/, async (msg, match) => {
+bot.onText(/\/addadmin(?:@\w+)?/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const messageId = msg.message_id;
 
-  // Auto delete command
   autoDeleteMessage(chatId, messageId, 3);
 
   if (!isAdmin(userId)) {
@@ -117,42 +162,41 @@ bot.onText(/\/addadmin(?:@\w+)?\s+@?(\w+)/, async (msg, match) => {
     return;
   }
 
-  try {
-    let targetUserId;
-
-    if (msg.reply_to_message) {
-      targetUserId = msg.reply_to_message.from.id;
-    } else {
-      const reply = await bot.sendMessage(chatId, '⚠️ Reply ke pesan orangnya atau mention dia!');
-      autoDeleteMessage(chatId, reply.message_id, 3);
-      return;
-    }
-
-    if (admins.includes(targetUserId)) {
-      const reply = await bot.sendMessage(chatId, '⚠️ Udah jadi admin cok!');
-      autoDeleteMessage(chatId, reply.message_id, 3);
-      return;
-    }
-
-    admins.push(targetUserId);
-    saveJSON(ADMINS_FILE, admins);
-
-    const reply = await bot.sendMessage(chatId, `✅ Admin ditambah!\n👤 User ID: ${targetUserId}`, {
-      parse_mode: 'Markdown'
-    });
-    autoDeleteMessage(chatId, reply.message_id, 5);
-  } catch (err) {
-    const reply = await bot.sendMessage(chatId, '❌ Gagal tambah admin. Pastikan reply ke pesan orangnya!');
+  if (!checkRateLimit(userId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Slow down! Terlalu banyak request!');
     autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
   }
+
+  if (!msg.reply_to_message) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Reply ke pesan orangnya!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const targetUserId = msg.reply_to_message.from.id;
+
+  if (adminCache.has(targetUserId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Udah jadi admin cok!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  admins.push(targetUserId);
+  adminCache.add(targetUserId);
+  await saveJSON(ADMINS_FILE, admins);
+
+  const reply = await bot.sendMessage(chatId, `✅ Admin ditambah!\n👤 User ID: ${targetUserId}`, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
-bot.onText(/\/removeadmin(?:@\w+)?\s+@?(\w+)?/, async (msg, match) => {
+bot.onText(/\/removeadmin(?:@\w+)?/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const messageId = msg.message_id;
 
-  // Auto delete command
   autoDeleteMessage(chatId, messageId, 3);
 
   if (!isAdmin(userId)) {
@@ -161,17 +205,20 @@ bot.onText(/\/removeadmin(?:@\w+)?\s+@?(\w+)?/, async (msg, match) => {
     return;
   }
 
-  let targetUserId;
+  if (!checkRateLimit(userId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Slow down! Terlalu banyak request!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
 
-  if (msg.reply_to_message) {
-    targetUserId = msg.reply_to_message.from.id;
-  } else {
+  if (!msg.reply_to_message) {
     const reply = await bot.sendMessage(chatId, '⚠️ Reply ke pesan admin yang mau ditendang!');
     autoDeleteMessage(chatId, reply.message_id, 3);
     return;
   }
 
-  // Gak bisa hapus owner anjir!
+  const targetUserId = msg.reply_to_message.from.id;
+
   if (targetUserId === OWNER_ID) {
     const reply = await bot.sendMessage(chatId, '❌ Gak bisa hapus owner anjir! Dia admin utama! 👑');
     autoDeleteMessage(chatId, reply.message_id, 3);
@@ -186,7 +233,8 @@ bot.onText(/\/removeadmin(?:@\w+)?\s+@?(\w+)?/, async (msg, match) => {
   }
 
   admins.splice(index, 1);
-  saveJSON(ADMINS_FILE, admins);
+  adminCache.delete(targetUserId);
+  await saveJSON(ADMINS_FILE, admins);
 
   const reply = await bot.sendMessage(chatId, `✅ Admin dihapus!\n👤 User ID: ${targetUserId}`, {
     parse_mode: 'Markdown'
@@ -199,7 +247,6 @@ bot.onText(/\/listadmins/, async (msg) => {
   const userId = msg.from.id;
   const messageId = msg.message_id;
 
-  // Auto delete command
   autoDeleteMessage(chatId, messageId, 3);
 
   if (!isAdmin(userId)) {
@@ -236,11 +283,16 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
   const messageId = msg.message_id;
   const filterName = match[1].toLowerCase();
 
-  // Auto delete command
   autoDeleteMessage(chatId, messageId, 3);
 
   if (!isAdmin(userId)) {
     const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!checkRateLimit(userId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Slow down! Terlalu banyak request!');
     autoDeleteMessage(chatId, reply.message_id, 3);
     return;
   }
@@ -265,7 +317,7 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
   };
 
   filters[filterName] = filterData;
-  saveJSON(FILTERS_FILE, filters);
+  await saveJSON(FILTERS_FILE, filters);
 
   const reply = await bot.sendMessage(chatId, `✅ Filter *${filterName}* berhasil ditambah anjir! 🚀`, {
     parse_mode: 'Markdown'
@@ -279,11 +331,16 @@ bot.onText(/^!del\s+(\w+)/, async (msg, match) => {
   const messageId = msg.message_id;
   const filterName = match[1].toLowerCase();
 
-  // Auto delete command
   autoDeleteMessage(chatId, messageId, 3);
 
   if (!isAdmin(userId)) {
     const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!checkRateLimit(userId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Slow down! Terlalu banyak request!');
     autoDeleteMessage(chatId, reply.message_id, 3);
     return;
   }
@@ -297,7 +354,7 @@ bot.onText(/^!del\s+(\w+)/, async (msg, match) => {
   }
 
   delete filters[filterName];
-  saveJSON(FILTERS_FILE, filters);
+  await saveJSON(FILTERS_FILE, filters);
 
   const reply = await bot.sendMessage(chatId, `✅ Filter *${filterName}* berhasil dihapus!`, {
     parse_mode: 'Markdown'
@@ -310,7 +367,6 @@ bot.onText(/^!list/, async (msg) => {
   const userId = msg.from.id;
   const messageId = msg.message_id;
 
-  // Auto delete command
   autoDeleteMessage(chatId, messageId, 3);
 
   if (!isAdmin(userId)) {
@@ -327,7 +383,6 @@ bot.onText(/^!list/, async (msg) => {
     return;
   }
 
-  // Pagination
   const { pageItems, totalPages, currentPage } = createPagination(filterNames, 1, 15);
   const filterList = pageItems.map((name, i) => `${i + 1}. \`!${name}\` atau \`${name}\``).join('\n');
   
@@ -343,7 +398,6 @@ bot.onText(/^!list/, async (msg) => {
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
-// Handle pagination callback
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const messageId = query.message.message_id;
@@ -378,85 +432,79 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// Handle filter trigger (dengan atau tanpa !)
-bot.on('message', (msg) => {
+// Optimized filter trigger handler
+bot.on('message', async (msg) => {
+  if (!msg.text) return;
+  if (msg.text.startsWith('/')) return;
+  if (msg.text.startsWith('!add') || msg.text.startsWith('!del') || 
+      msg.text.startsWith('!list') || msg.text.startsWith('!status')) return;
+
   const chatId = msg.chat.id;
-  const text = msg.text;
-
-  if (!text) return;
-
-  // Skip commands
-  if (text.startsWith('/')) return;
-  if (text.startsWith('!add') || text.startsWith('!del') || text.startsWith('!list') || text.startsWith('!status')) return;
-
   let filterName;
   
-  // Check dengan !
-  if (text.startsWith('!')) {
-    filterName = text.substring(1).trim().toLowerCase();
+  if (msg.text.startsWith('!')) {
+    filterName = msg.text.substring(1).trim().toLowerCase();
   } else {
-    // Check tanpa !
-    filterName = text.trim().toLowerCase();
+    filterName = msg.text.trim().toLowerCase();
   }
 
   const filter = filters[filterName];
-  if (!filter) {
-    return;
-  }
+  if (!filter) return;
 
-  const options = {
-    parse_mode: 'Markdown',
-    entities: filter.entities
-  };
+  try {
+    const options = {
+      parse_mode: 'Markdown',
+      entities: filter.entities
+    };
 
-  // Send media if exists
-  if (filter.photo) {
-    bot.sendPhoto(chatId, filter.photo, {
-      caption: filter.text,
-      caption_entities: filter.entities
-    });
-  } else if (filter.video) {
-    bot.sendVideo(chatId, filter.video, {
-      caption: filter.text,
-      caption_entities: filter.entities
-    });
-  } else if (filter.animation) {
-    bot.sendAnimation(chatId, filter.animation, {
-      caption: filter.text,
-      caption_entities: filter.entities
-    });
-  } else if (filter.document) {
-    bot.sendDocument(chatId, filter.document, {
-      caption: filter.text,
-      caption_entities: filter.entities
-    });
-  } else if (filter.audio) {
-    bot.sendAudio(chatId, filter.audio, {
-      caption: filter.text,
-      caption_entities: filter.entities
-    });
-  } else if (filter.voice) {
-    bot.sendVoice(chatId, filter.voice, {
-      caption: filter.text,
-      caption_entities: filter.entities
-    });
-  } else if (filter.sticker) {
-    bot.sendSticker(chatId, filter.sticker);
-    if (filter.text) {
-      bot.sendMessage(chatId, filter.text, options);
+    if (filter.photo) {
+      await bot.sendPhoto(chatId, filter.photo, {
+        caption: filter.text,
+        caption_entities: filter.entities
+      });
+    } else if (filter.video) {
+      await bot.sendVideo(chatId, filter.video, {
+        caption: filter.text,
+        caption_entities: filter.entities
+      });
+    } else if (filter.animation) {
+      await bot.sendAnimation(chatId, filter.animation, {
+        caption: filter.text,
+        caption_entities: filter.entities
+      });
+    } else if (filter.document) {
+      await bot.sendDocument(chatId, filter.document, {
+        caption: filter.text,
+        caption_entities: filter.entities
+      });
+    } else if (filter.audio) {
+      await bot.sendAudio(chatId, filter.audio, {
+        caption: filter.text,
+        caption_entities: filter.entities
+      });
+    } else if (filter.voice) {
+      await bot.sendVoice(chatId, filter.voice, {
+        caption: filter.text,
+        caption_entities: filter.entities
+      });
+    } else if (filter.sticker) {
+      await bot.sendSticker(chatId, filter.sticker);
+      if (filter.text) {
+        await bot.sendMessage(chatId, filter.text, options);
+      }
+    } else if (filter.text) {
+      await bot.sendMessage(chatId, filter.text, options);
     }
-  } else if (filter.text) {
-    bot.sendMessage(chatId, filter.text, options);
+  } catch (err) {
+    console.error('Filter send error:', err);
   }
 });
 
-// 📊 STATUS COMMAND
 bot.onText(/^!status/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const messageId = msg.message_id;
 
-  // Auto delete command
   autoDeleteMessage(chatId, messageId, 3);
 
   if (!isAdmin(userId)) {
@@ -468,15 +516,43 @@ bot.onText(/^!status/, async (msg) => {
   const status = `📊 *Status Bot*\n\n` +
     `👑 Total Admin: *${admins.length}*\n` +
     `🎯 Total Filter: *${Object.keys(filters).length}*\n` +
+    `⚡ Active Timers: *${deleteTimers.size}*\n` +
     `✅ Status: *Online* 🚀`;
 
   const reply = await bot.sendMessage(chatId, status, { parse_mode: 'Markdown' });
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
-// Error handling
+// Enhanced error handling
 bot.on('polling_error', (error) => {
-  console.error('Polling error:', error);
+  console.error('⚠️ Polling error:', error.code, error.message);
+  
+  // Auto-recovery untuk network errors
+  if (error.code === 'EFATAL' || error.code === 'ETELEGRAM') {
+    console.log('🔄 Attempting to recover...');
+    setTimeout(() => {
+      bot.startPolling({ restart: true });
+    }, 5000);
+  }
 });
 
-console.log('🤖 Bot started anjir! 🚀');
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Shutting down gracefully...');
+  
+  // Clear all timers
+  deleteTimers.forEach(timer => clearTimeout(timer));
+  deleteTimers.clear();
+  
+  // Stop polling
+  await bot.stopPolling();
+  
+  console.log('👋 Bot stopped');
+  process.exit(0);
+});
+
+// Initialize and start
+initializeData().then(() => {
+  console.log('🤖 Bot started anjir! 🚀');
+  console.log(`📊 Loaded ${admins.length} admins and ${Object.keys(filters).length} filters`);
+});
