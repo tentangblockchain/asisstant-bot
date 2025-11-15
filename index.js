@@ -350,7 +350,21 @@ function getBestModel(userId) {
   return fallbackModel || null;
 }
 
-// AI Helper: Call Groq API
+// Language detection helper
+function detectLanguage(text) {
+  const indonesianWords = ['apa', 'yang', 'ini', 'itu', 'dan', 'atau', 'saya', 'kamu', 'dia', 'kami', 'mereka', 'dengan', 'untuk', 'dari'];
+  const englishWords = ['what', 'that', 'this', 'and', 'or', 'the', 'you', 'they', 'with', 'for', 'from'];
+  
+  const lowerText = text.toLowerCase();
+  const idCount = indonesianWords.filter(word => lowerText.includes(word)).length;
+  const enCount = englishWords.filter(word => lowerText.includes(word)).length;
+  
+  if (idCount > enCount) return 'id-ID';
+  if (enCount > idCount) return 'en-US';
+  return 'id-ID'; // Default to Indonesian
+}
+
+// AI Helper: Call Groq API with context-aware responses
 async function callGroqAPI(userMessage, userId) {
   const model = getBestModel(userId);
   if (!model) {
@@ -360,6 +374,17 @@ async function callGroqAPI(userMessage, userId) {
   // Get conversation history (limit to MAX_CONVERSATION_LENGTH)
   const history = aiConversations.get(userId) || [];
   const recentHistory = history.slice(-Math.min(5, MAX_CONVERSATION_LENGTH));
+  
+  // Detect user language
+  const detectedLang = detectLanguage(userMessage);
+  
+  // Context-aware: User role detection
+  const userRole = isOwner(userId) ? 'Owner' : isAdmin(userId) ? 'Admin' : 'User';
+  const roleContext = userRole === 'Owner' 
+    ? 'User ini adalah OWNER bot (pemilik utama), punya akses penuh ke semua fitur termasuk export, reset AI, dll.'
+    : userRole === 'Admin'
+    ? 'User ini adalah ADMIN, bisa manage filters, ban user, lihat stats, dll.'
+    : 'User ini adalah user biasa, cuma bisa pakai filters yang udah ada.';
   
   // Build filter knowledge base untuk AI
   const filterCount = Object.keys(filters).length;
@@ -383,19 +408,31 @@ ${filterCount > 20 ? '\n(dan ' + (filterCount - 20) + ' filters lainnya...)' : '
 Kamu bisa referensikan filters ini kalau user tanya tentang fitur bot atau minta bantuan.`;
   }
   
-  // Build messages with personality + filter knowledge
+  // Build messages with personality + filter knowledge + context
+  const languageInstruction = detectedLang === 'en-US' 
+    ? `LANGUAGE: Respond in English (detected from user's message).
+- Use natural, friendly English
+- Use "~" for soft tone
+- Max 1-2 emojis per response`
+    : `LANGUAGE: Respond in Indonesian (detected from user's message).
+- Natural Indonesian sehari-hari
+- Pakai "sih", "nih", "yaa" biar natural
+- Max 1-2 emoji per response
+- Pakai "~" untuk nada lembut`;
+
   const messages = [
     {
       role: 'system',
       content: `Kamu adalah Hoki, AI assistant yang ramah dan helpful di Telegram bot.
 
+USER CONTEXT:
+${roleContext}
+
 PERSONALITY:
 - Ramah kayak teman baik
 - Helpful dan concise (langsung to the point)
-- Natural pakai bahasa Indonesia sehari-hari
-- Kadang pakai "sih", "nih", "yaa" biar natural
-- Max 1-2 emoji per response
-- Pakai "~" untuk nada lembut
+- Aware of user's role dan adjust response accordingly
+${languageInstruction}
 
 RULES:
 - Jangan bahas politik/agama/hal sensitif
@@ -403,13 +440,20 @@ RULES:
 - Kalau gak tau, bilang jujur
 - Jawaban singkat tapi jelas (2-3 kalimat max kalau bisa)
 - Fokus bantu user dengan pertanyaannya
+- Untuk Admin/Owner: Bisa kasih info lebih detail tentang command management
+- Untuk User biasa: Fokus ke cara pakai filters aja
 
-Contoh gaya chat:
+Contoh gaya chat (Indonesian):
 - "Iya nih, aku bisa bantu! 😊"
 - "Hmm gini sih~ kamu bisa coba..."
-- "Oh itu maksudnya kayak gini yaa..."${filterKnowledge}
+- "Oh itu maksudnya kayak gini yaa..."
 
-Jawab pakai bahasa Indonesia yang natural dan helpful!`
+Contoh gaya chat (English):
+- "Sure, I can help! 😊"
+- "Hmm, here's what you can do~"
+- "Oh I see what you mean!"${filterKnowledge}
+
+Respond in the detected language and adjust your helpfulness based on user role!`
     },
     ...recentHistory,
     {
@@ -594,7 +638,12 @@ bot.onText(/\/help/, async (msg) => {
       `${isOwner(userId) ? '!export - Backup semua filter\n' : ''}` +
       `\n💡 *Cara Pake Filter:*\n` +
       `Ketik \`!namafilter\` atau \`namafilter\`\n\n` +
-      `${AI_ENABLED ? '🤖 *AI Hoki:*\nMention @' + (await bot.getMe()).username + ' untuk chat dengan Hoki!\n\n' : ''}` +
+      `${AI_ENABLED ? '🤖 *AI Hoki:*\nReply ke pesan bot untuk chat dengan Hoki!\n\n' : ''}` +
+      `🔔 *Notification System:*\n` +
+      `\`!notifstats\` - Lihat notification stats\n` +
+      `Auto welcome untuk member baru\n` +
+      `Daily stats dikirim ke owner setiap hari\n` +
+      `Alert otomatis untuk critical errors\n\n` +
       `📌 *Media Support:*\n` +
       `Text, Photo, Video, Document, GIF, Audio, Voice, Sticker\n\n` +
       `✨ *Format Support:*\n` +
@@ -653,6 +702,121 @@ bot.onText(/\/addadmin(?:@\w+)?/, async (msg) => {
   });
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
+
+
+// 🔔 NOTIFICATION SYSTEM
+const notificationStats = {
+  welcomesSent: 0,
+  dailyStatsSent: 0,
+  alertsSent: 0
+};
+
+// Welcome message for new members
+bot.on('new_chat_members', async (msg) => {
+  const chatId = msg.chat.id;
+  const newMembers = msg.new_chat_members;
+  
+  for (const member of newMembers) {
+    if (member.is_bot) continue; // Skip bots
+    
+    const firstName = member.first_name || 'User';
+    const welcomeMsg = `👋 Selamat datang *${firstName}*!\n\n` +
+      `🤖 Gua bot filter management. Ketik /help untuk lihat command!\n` +
+      `💡 Lu bisa pakai filter dengan ketik \`!namafilter\`\n\n` +
+      `${AI_ENABLED ? '🎯 Chat sama gua dengan reply ke pesan gua!\n\n' : ''}` +
+      `Enjoy! 🚀`;
+    
+    try {
+      await bot.sendMessage(chatId, welcomeMsg, { parse_mode: 'Markdown' });
+      notificationStats.welcomesSent++;
+      console.log(`👋 Welcome message sent to ${firstName} (${member.id})`);
+    } catch (err) {
+      console.error('❌ Failed to send welcome message:', err.message);
+    }
+  }
+});
+
+// Daily stats notification (runs every 24 hours)
+let dailyStatsInterval = null;
+
+function startDailyStats() {
+  // Send daily stats at 9 AM (adjust as needed)
+  const now = new Date();
+  const scheduledTime = new Date();
+  scheduledTime.setHours(9, 0, 0, 0);
+  
+  if (scheduledTime <= now) {
+    scheduledTime.setDate(scheduledTime.getDate() + 1);
+  }
+  
+  const timeUntilFirstRun = scheduledTime - now;
+  
+  setTimeout(() => {
+    sendDailyStats();
+    // Then run every 24 hours
+    dailyStatsInterval = setInterval(sendDailyStats, 24 * 60 * 60 * 1000);
+  }, timeUntilFirstRun);
+  
+  console.log(`📊 Daily stats scheduled for ${scheduledTime.toLocaleString('id-ID')}`);
+}
+
+async function sendDailyStats() {
+  if (!OWNER_ID) return;
+  
+  const filterCount = Object.keys(filters).length;
+  const adminCount = admins.length;
+  const blacklistCount = blacklist.length;
+  const uptime = process.uptime();
+  const uptimeHours = Math.floor(uptime / 3600);
+  const uptimeDays = Math.floor(uptimeHours / 24);
+  
+  const statsMsg = `📊 *Daily Bot Stats*\n\n` +
+    `📅 Date: ${new Date().toLocaleDateString('id-ID')}\n\n` +
+    `🎯 Total Filters: ${filterCount}\n` +
+    `👥 Total Admins: ${adminCount}\n` +
+    `🚫 Blacklisted Users: ${blacklistCount}\n` +
+    `⏱️ Uptime: ${uptimeDays}d ${uptimeHours % 24}h\n\n` +
+    `${AI_ENABLED ? `🤖 *AI Stats:*\n` +
+    `Total Requests: ${aiStats.totalRequests}\n` +
+    `Success Rate: ${aiStats.totalRequests > 0 ? ((aiStats.successfulResponses / aiStats.totalRequests) * 100).toFixed(1) : 0}%\n` +
+    `Active Conversations: ${aiConversations.size}\n\n` : ''}` +
+    `🔔 *Notifications:*\n` +
+    `Welcomes Sent: ${notificationStats.welcomesSent}\n` +
+    `Alerts Sent: ${notificationStats.alertsSent}\n\n` +
+    `✅ Bot Status: Online 🚀`;
+  
+  try {
+    await bot.sendMessage(OWNER_ID, statsMsg, { parse_mode: 'Markdown' });
+    notificationStats.dailyStatsSent++;
+    console.log('📊 Daily stats sent to owner');
+  } catch (err) {
+    console.error('❌ Failed to send daily stats:', err.message);
+  }
+}
+
+// Critical error notification
+function notifyCriticalError(errorMsg, context = {}) {
+  if (!OWNER_ID) return;
+  
+  const alertMsg = `🚨 *Critical Error Alert*\n\n` +
+    `⏰ Time: ${new Date().toLocaleString('id-ID')}\n` +
+    `❌ Error: \`${errorMsg}\`\n` +
+    `${context.chatId ? `💬 Chat ID: ${context.chatId}\n` : ''}` +
+    `${context.userId ? `👤 User ID: ${context.userId}\n` : ''}` +
+    `${context.filterName ? `🎯 Filter: ${context.filterName}\n` : ''}` +
+    `\nPlease check the logs for more details.`;
+  
+  bot.sendMessage(OWNER_ID, alertMsg, { parse_mode: 'Markdown' })
+    .then(() => {
+      notificationStats.alertsSent++;
+      console.log('🚨 Critical error notification sent to owner');
+    })
+    .catch(err => console.error('Failed to send error notification:', err.message));
+}
+
+// Start daily stats on bot initialization
+startDailyStats();
+
 
 bot.onText(/\/removeadmin(?:@\w+)?/, async (msg) => {
   const chatId = msg.chat.id;
@@ -1193,6 +1357,30 @@ bot.on('message', async (msg) => {
   }
 });
 
+// 🔔 NOTIFICATION STATS COMMAND
+bot.onText(/^!notifstats/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const statsMsg = `🔔 *Notification System Stats*\n\n` +
+    `👋 Welcomes Sent: ${notificationStats.welcomesSent}\n` +
+    `📊 Daily Stats Sent: ${notificationStats.dailyStatsSent}\n` +
+    `🚨 Critical Alerts Sent: ${notificationStats.alertsSent}\n\n` +
+    `✅ System: Active`;
+
+  const reply = await bot.sendMessage(chatId, statsMsg, { parse_mode: 'Markdown' });
+  autoDeleteMessage(chatId, reply.message_id, 10);
+});
+
 // 📊 AI STATS COMMAND
 bot.onText(/^!aistats/, async (msg) => {
   const chatId = msg.chat.id;
@@ -1664,14 +1852,11 @@ bot.on('message', async (msg) => {
     
     // Notify owner untuk critical errors (kecuali owner yang trigger sendiri)
     if (msg.from.id !== OWNER_ID && (err.code === 'EFATAL' || err.message.includes('parse'))) {
-      bot.sendMessage(OWNER_ID, 
-        `🚨 *Critical Filter Error*\n\n` +
-        `Filter: \`${filterName}\`\n` +
-        `Chat: ${chatId}\n` +
-        `User: ${msg.from.id}\n` +
-        `Error: \`${err.message}\``, 
-        { parse_mode: 'Markdown' }
-      ).catch(() => {});
+      notifyCriticalError(err.message, {
+        chatId: chatId,
+        userId: msg.from.id,
+        filterName: filterName
+      });
     }
   }
 });
