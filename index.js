@@ -1,4 +1,3 @@
-
 // 🔥 BOT TELEGRAM - ADMIN & FILTER MANAGEMENT (OPTIMIZED)
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
@@ -7,6 +6,30 @@ const fsSync = require('fs');
 const path = require('path');
 const dns = require('dns');
 const https = require('https');
+const winston = require('winston'); // For structured logging
+
+// ============ Logger Configuration ============
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    winston.format.errors({ stack: true }),
+    winston.format.splat(),
+    winston.format.json()
+  ),
+  defaultMeta: { service: 'bot' },
+  transports: [
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' }),
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.simple()
+      ),
+    }),
+  ],
+});
+// ==============================================
 
 // ============ IPv4 FIX - FORCE IPv4 ONLY ============
 // Force IPv4 untuk mengatasi masalah timeout IPv6
@@ -19,22 +42,22 @@ const httpsAgent = new https.Agent({
   timeout: 120000  // 2 minutes
 });
 
-console.log('🌐 Menggunakan konfigurasi IPv4-only untuk koneksi Telegram API');
+logger.info('🌐 Menggunakan konfigurasi IPv4-only untuk koneksi Telegram API');
 // =====================================================
 
 // Validate environment variables
 if (!process.env.BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN tidak ditemukan di .env file!');
+  logger.error('❌ BOT_TOKEN tidak ditemukan di .env file!');
   process.exit(1);
 }
 
 if (!process.env.OWNER_ID) {
-  console.error('❌ OWNER_ID tidak ditemukan di .env file!');
+  logger.error('❌ OWNER_ID tidak ditemukan di .env file!');
   process.exit(1);
 }
 
 // Initialize bot with optimized settings for slow internet + IPv4-only
-const bot = new TelegramBot(process.env.BOT_TOKEN, { 
+const bot = new TelegramBot(process.env.BOT_TOKEN, {
   polling: {
     interval: 10000, // Slower polling (10 seconds) untuk koneksi sangat lambat
     autoStart: false,
@@ -73,33 +96,202 @@ let spamTimeouts = new Map(); // Track user timeouts
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const AI_ENABLED = GROQ_API_KEY.length > 0;
 
-// Multi-model cascade system
+// Multi-model cascade system (AI Hoki) - OPTIMIZED
 const AI_MODELS = [
     {
         name: 'llama-3.3-70b-versatile',
-        limit: 1000,
-        used: 0,
-        quality: 10,
-        tokensPerMin: 12000,
-        use: 'premium' // Admin priority (Tier 1)
+        dailyLimit: 1000,           // Request per hari
+        tokensPerDay: 100000,       // Token limit per hari
+        tokensPerMin: 12000,        // Token per menit
+        rpm: 30,                    // Request per menit
+        quality: 10,                // Quality score (1-10)
+        latency: 300,               // Average latency (ms)
+        used: 0,                    // Daily counter
+        rpmUsed: 0,                 // Per-minute counter
+        lastReset: Date.now(),      // Last reset timestamp
+        tier: 1,                    // Priority tier
+        use: 'premium',
+        description: 'Best quality - Admin priority, complex queries'
     },
     {
         name: 'llama-3.1-8b-instant',
-        limit: 14400,
-        used: 0,
-        quality: 7,
+        dailyLimit: 14400,
+        tokensPerDay: 500000,
         tokensPerMin: 6000,
-        use: 'general' // Untuk semua user (Tier 2)
+        rpm: 30,
+        quality: 7,
+        latency: 150,
+        used: 0,
+        rpmUsed: 0,
+        lastReset: Date.now(),
+        tier: 2,
+        use: 'general',
+        description: 'Fast & balanced - All users, simple queries'
     },
     {
-        name: 'meta-llama/llama-guard-3-8b',
-        limit: 14400,
+        name: 'llama-3.1-70b-versatile',  // Changed from guard model
+        dailyLimit: 1000,
+        tokensPerDay: 100000,
+        tokensPerMin: 12000,
+        rpm: 30,
+        quality: 9,
+        latency: 250,
         used: 0,
-        quality: 6,
-        tokensPerMin: 15000,
-        use: 'fallback' // Emergency fallback (Tier 3)
+        rpmUsed: 0,
+        lastReset: Date.now(),
+        tier: 3,
+        use: 'fallback',
+        description: 'Backup premium - When Tier 1 & 2 limited'
     }
 ];
+
+// Separate content moderation model
+const GUARD_MODEL = {
+    name: 'meta-llama/llama-guard-3-8b',
+    dailyLimit: 14400,
+    tokensPerMin: 15000,
+    rpm: 30,
+    used: 0,
+    rpmUsed: 0,
+    lastReset: Date.now(),
+    description: 'Content moderation - Filter harmful content'
+};
+
+// AI Model Router Class
+class AIModelRouter {
+    constructor() {
+        this.models = AI_MODELS;
+        this.guard = GUARD_MODEL;
+    }
+
+    // Reset RPM counters every minute
+    resetMinuteCounters() {
+        const now = Date.now();
+        this.models.forEach(model => {
+            if (now - model.lastReset > 60000) {
+                model.rpmUsed = 0;
+                model.lastReset = now;
+                logger.info(`🔄 Reset RPM for ${model.name}`);
+            }
+        });
+
+        if (now - this.guard.lastReset > 60000) {
+            this.guard.rpmUsed = 0;
+            this.guard.lastReset = now;
+        }
+    }
+
+    // Reset daily counters (called from hourly interval)
+    resetDailyCounters() {
+        this.models.forEach(model => {
+            const previousUsed = model.used;
+            model.used = 0;
+            if (previousUsed > 0) {
+                logger.info(`🔄 Reset daily counter ${model.name}: ${previousUsed} -> 0`);
+            }
+        });
+        this.guard.used = 0;
+    }
+
+    // Check if model is available
+    isAvailable(model) {
+        return (
+            model.rpmUsed < model.rpm &&
+            model.used < model.dailyLimit
+        );
+    }
+
+    // Analyze query complexity
+    analyzeComplexity(text) {
+        let score = 0;
+
+        // Length-based scoring
+        if (text.length > 500) score += 0.3;
+        if (text.split('\n').length > 5) score += 0.2;
+
+        // Technical keywords
+        if (/code|function|algorithm|technical|programming|debug/i.test(text)) score += 0.3;
+
+        // Complex question keywords
+        if (/explain|analyze|compare|detailed|why|how does|difference/i.test(text)) score += 0.2;
+
+        if (score < 0.3) return 'simple';
+        if (score < 0.7) return 'medium';
+        return 'complex';
+    }
+
+    // Select best available model
+    selectModel(userId, isAdmin = false, text = '') {
+        this.resetMinuteCounters();
+
+        const complexity = this.analyzeComplexity(text);
+        logger.info(`🔍 Query complexity: ${complexity}`);
+
+        // TIER 1: Admin + complex query → Premium
+        if (isAdmin && complexity === 'complex') {
+            const premium = this.models.find(m => m.tier === 1);
+            if (this.isAvailable(premium)) {
+                logger.info(`🎯 Selected Tier 1: ${premium.name}`);
+                return premium;
+            }
+        }
+
+        // TIER 2: General model for most queries
+        const general = this.models.find(m => m.tier === 2);
+        if (this.isAvailable(general)) {
+            logger.info(`🎯 Selected Tier 2: ${general.name}`);
+            return general;
+        }
+
+        // TIER 3: Fallback premium model
+        const fallback = this.models.find(m => m.tier === 3);
+        if (this.isAvailable(fallback)) {
+            logger.info(`🎯 Selected Tier 3: ${fallback.name}`);
+            return fallback;
+        }
+
+        // LAST RESORT: Try tier 1 again (might have reset)
+        const premium = this.models.find(m => m.tier === 1);
+        if (this.isAvailable(premium)) {
+            logger.info(`🎯 Selected Tier 1 (last resort): ${premium.name}`);
+            return premium;
+        }
+
+        throw new Error('⚠️ All AI models are rate limited! Try again in 1 minute.');
+    }
+
+    // Increment usage counters
+    incrementUsage(model) {
+        model.rpmUsed++;
+        model.used++;
+
+        logger.info(`📊 ${model.name}: RPM ${model.rpmUsed}/${model.rpm}, Daily ${model.used}/${model.dailyLimit}`);
+    }
+
+    // Get statistics
+    getStats() {
+        return {
+            models: this.models.map(m => ({
+                name: m.name,
+                tier: m.tier,
+                quality: m.quality,
+                rpm: `${m.rpmUsed}/${m.rpm}`,
+                daily: `${m.used}/${m.dailyLimit}`,
+                available: this.isAvailable(m) ? '✅' : '❌',
+                description: m.description
+            })),
+            guard: {
+                name: this.guard.name,
+                rpm: `${this.guard.rpmUsed}/${this.guard.rpm}`,
+                daily: `${this.guard.used}/${this.guard.dailyLimit}`,
+                available: this.isAvailable(this.guard) ? '✅' : '❌'
+            }
+        };
+    }
+}
+
+// Initialize AI Router
+const aiRouter = new AIModelRouter();
 
 // Hoki AI Personality System
 const HOKI_PERSONALITY = {
@@ -112,10 +304,10 @@ const HOKI_PERSONALITY = {
 
 // Conversation tracking untuk analytics
 let aiConversations = new Map(); // userId -> conversation history
-let aiStats = {
+let AI_STATS = { // Renamed from aiStats for consistency with AI_MODELS
     totalRequests: 0,
     successfulResponses: 0,
-    failedResponses: 0,
+    failedResponses: 0, // Renamed from failedResponses to avoid confusion with error handling
     modelUsage: {}
 };
 
@@ -146,21 +338,17 @@ setInterval(() => {
   for (const [userId, history] of aiConversations.entries()) {
     if (history.length > MAX_CONVERSATION_LENGTH * 2) {
       aiConversations.delete(userId);
-      console.log(`🧹 Cleaned up long conversation for user ${userId}`);
+      logger.info(`🧹 Cleaned up long conversation for user ${userId}`);
     }
   }
 }, 60000); // Every minute
 
-// Reset model usage counters every hour (Groq limit resets hourly)
+// Reset model counters every hour (Groq limit resets hourly)
 setInterval(() => {
-  AI_MODELS.forEach(m => {
-    const previousUsed = m.used;
-    m.used = 0;
-    if (previousUsed > 0) {
-      console.log(`🔄 Reset ${m.name}: ${previousUsed} -> 0`);
-    }
-  });
-  console.log('✅ AI model counters reset (hourly)');
+  if (AI_ENABLED) {
+    aiRouter.resetDailyCounters();
+    logger.info('✅ AI model counters reset (hourly)');
+  }
 }, 3600000); // Every hour
 
 // Initialize data asynchronously
@@ -178,10 +366,10 @@ async function initializeData() {
     // Build admin cache
     adminCache = new Set(admins);
 
-    console.log('✅ Data initialized successfully');
-    console.log(`🤖 AI Hoki: ${AI_ENABLED ? 'ENABLED ✅' : 'DISABLED (GROQ_API_KEY not set)'}`);
+    logger.info('✅ Data initialized successfully');
+    logger.info(`🤖 AI Hoki: ${AI_ENABLED ? 'ENABLED ✅' : 'DISABLED (GROQ_API_KEY not set)'}`);
   } catch (err) {
-    console.error('❌ Initialization error:', err);
+    logger.error('❌ Initialization error:', err);
   }
 }
 
@@ -193,20 +381,17 @@ async function loadJSON(file, defaultValue) {
       return JSON.parse(data);
     }
   } catch (err) {
-    console.error(`Error loading ${file}:`, err);
+    logger.error(`Error loading ${file}:`, err);
   }
   return defaultValue;
 }
 
 async function saveJSON(file, data) {
   try {
-    // IMPORTANT: Just write the data directly
-    // The in-memory object (filters, admins) is already the source of truth
-    // Merging with file would bring back deleted items - that's a bug!
     await fs.writeFile(file, JSON.stringify(data, null, 2));
     return true;
   } catch (err) {
-    console.error(`Error saving ${file}:`, err);
+    logger.error(`Error saving ${file}:`, err);
     return false;
   }
 }
@@ -217,17 +402,14 @@ async function saveJSON(file, data) {
 function entitiesToHTML(text, entities) {
   if (!entities || entities.length === 0) return text;
 
-  // Build array of text segments with their formatting
   const segments = [];
   let lastOffset = 0;
 
-  // Sort entities by offset (ascending)
   const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
 
   for (const entity of sortedEntities) {
-    const { offset, length, type, url } = entity;
+    const { offset, length, type, url, user } = entity;
 
-    // Add plain text before this entity
     if (offset > lastOffset) {
       segments.push({
         text: text.substring(lastOffset, offset),
@@ -235,19 +417,17 @@ function entitiesToHTML(text, entities) {
       });
     }
 
-    // Add formatted entity
     const content = text.substring(offset, offset + length);
     segments.push({
       text: content,
       type: type,
       url: url,
-      user: entity.user
+      user: user
     });
 
     lastOffset = offset + length;
   }
 
-  // Add remaining plain text
   if (lastOffset < text.length) {
     segments.push({
       text: text.substring(lastOffset),
@@ -255,7 +435,6 @@ function entitiesToHTML(text, entities) {
     });
   }
 
-  // Helper to escape HTML special characters
   function escapeHTML(str) {
     return str.replace(/&/g, '&amp;')
               .replace(/</g, '&lt;')
@@ -263,12 +442,9 @@ function entitiesToHTML(text, entities) {
               .replace(/"/g, '&quot;');
   }
 
-  // Convert segments to HTML
   let result = '';
   for (const segment of segments) {
     const { text: segText, type, url, user } = segment;
-
-    // Escape HTML in content for security
     const escapedText = escapeHTML(segText);
 
     switch (type) {
@@ -310,7 +486,6 @@ function entitiesToHTML(text, entities) {
       case 'email':
       case 'phone_number':
       default:
-        // Auto-detected by Telegram, no special formatting needed
         result += escapedText;
         break;
     }
@@ -350,23 +525,8 @@ function getTimeoutRemaining(userId) {
 }
 
 // AI Helper: Get best available model based on user type
-function getBestModel(userId) {
-  const userIsAdmin = isAdmin(userId);
-
-  // Admin gets priority access to premium model
-  if (userIsAdmin) {
-    const premiumModel = AI_MODELS.find(m => m.use === 'premium' && m.used < m.limit);
-    if (premiumModel) return premiumModel;
-  }
-
-  // General users get general model
-  const generalModel = AI_MODELS.find(m => m.use === 'general' && m.used < m.limit);
-  if (generalModel) return generalModel;
-
-  // Fallback to emergency model
-  const fallbackModel = AI_MODELS.find(m => m.use === 'fallback' && m.used < m.limit);
-  return fallbackModel || null;
-}
+// This function is now replaced by aiRouter.selectModel() in the AI chat handler
+// function getBestModel(userId) { ... }
 
 // Language detection helper
 function detectLanguage(text) {
@@ -384,9 +544,12 @@ function detectLanguage(text) {
 
 // AI Helper: Call Groq API with context-aware responses
 async function callGroqAPI(userMessage, userId) {
-  const model = getBestModel(userId);
-  if (!model) {
-    throw new Error('Semua model AI lagi penuh nih~ Coba lagi nanti yaa 🙏');
+  // Select best available model
+  let selectedModel;
+  try {
+    selectedModel = aiRouter.selectModel(userId, isAdmin(userId), userMessage);
+  } catch (err) {
+    throw err; // Re-throw to be caught by the message handler
   }
 
   // Get conversation history (limit to MAX_CONVERSATION_LENGTH)
@@ -398,7 +561,7 @@ async function callGroqAPI(userMessage, userId) {
 
   // Context-aware: User role detection
   const userRole = isOwner(userId) ? 'Owner' : isAdmin(userId) ? 'Admin' : 'User';
-  const roleContext = userRole === 'Owner' 
+  const roleContext = userRole === 'Owner'
     ? 'User ini adalah OWNER bot (pemilik utama), punya akses penuh ke semua fitur termasuk export, reset AI, dll.'
     : userRole === 'Admin'
     ? 'User ini adalah ADMIN, bisa manage filters, ban user, lihat stats, dll.'
@@ -427,7 +590,7 @@ Kamu bisa referensikan filters ini kalau user tanya tentang fitur bot atau minta
   }
 
   // Build messages with personality + filter knowledge + context
-  const languageInstruction = detectedLang === 'en-US' 
+  const languageInstruction = detectedLang === 'en-US'
     ? `LANGUAGE: Respond in English (detected from user's message).
 - Use natural, friendly English
 - Use "~" for soft tone
@@ -491,7 +654,7 @@ Respond in the detected language and adjust your helpfulness based on user role!
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: model.name,
+        model: selectedModel.name,
         messages: messages,
         temperature: 0.8,
         max_tokens: 300, // Concise responses
@@ -500,14 +663,18 @@ Respond in the detected language and adjust your helpfulness based on user role!
     });
 
     if (!response.ok) {
-      throw new Error(`Groq API error: ${response.status}`);
+      const errorBody = await response.text();
+      throw new Error(`Groq API error: ${response.status} - ${errorBody}`);
     }
 
     const data = await response.json();
     const aiResponse = data.choices[0].message.content;
 
-    // Update model usage
-    model.used++;
+    // Increment model usage
+    aiRouter.incrementUsage(selectedModel);
+    AI_STATS.totalRequests++;
+    AI_STATS.successfulResponses++;
+    AI_STATS.modelUsage[selectedModel.name] = (AI_STATS.modelUsage[selectedModel.name] || 0) + 1;
 
     // Save conversation history (limit to MAX_CONVERSATION_LENGTH pairs)
     history.push({ role: 'user', content: sanitizedMessage });
@@ -517,45 +684,38 @@ Respond in the detected language and adjust your helpfulness based on user role!
     const trimmedHistory = history.slice(-MAX_CONVERSATION_LENGTH * 2);
     aiConversations.set(userId, trimmedHistory);
 
-    // Update stats
-    aiStats.totalRequests++;
-    aiStats.successfulResponses++;
-    aiStats.modelUsage[model.name] = (aiStats.modelUsage[model.name] || 0) + 1;
-
     return {
       response: aiResponse,
-      model: model.name,
+      model: selectedModel.name,
       tokensUsed: data.usage?.total_tokens || 0
     };
 
   } catch (err) {
-    aiStats.failedResponses++;
+    AI_STATS.failedResponses++;
+    logger.error(`AI Call Failed: ${err.message}`);
     throw err;
   }
 }
 
-// Rate limiting
+// Rate limiting check
 function checkRateLimit(userId) {
   const now = Date.now();
   const userLimits = rateLimits.get(userId) || [];
-
-  // Remove old entries
   const validLimits = userLimits.filter(time => now - time < RATE_LIMIT_WINDOW);
 
   if (validLimits.length >= MAX_REQUESTS) {
-    return false;
+    return false; // Exceeded limit
   }
 
   validLimits.push(now);
   rateLimits.set(userId, validLimits);
-  return true;
+  return true; // Within limit
 }
 
 // Optimized auto-delete with cleanup
 function autoDeleteMessage(chatId, messageId, delayMinutes = 3) {
   const key = `${chatId}_${messageId}`;
 
-  // Clear existing timer if any
   if (deleteTimers.has(key)) {
     clearTimeout(deleteTimers.get(key));
   }
@@ -564,7 +724,10 @@ function autoDeleteMessage(chatId, messageId, delayMinutes = 3) {
     try {
       await bot.deleteMessage(chatId, messageId);
     } catch (err) {
-      // Ignore errors (message might be already deleted)
+      // Ignore errors (message might be already deleted or bot lacks permissions)
+      if (err.code !== 400 && err.code !== 403) { // Log non-common errors
+        logger.warn(`Failed to delete message ${messageId} in chat ${chatId}: ${err.message}`);
+      }
     } finally {
       deleteTimers.delete(key);
     }
@@ -591,7 +754,7 @@ function createPaginationKeyboard(currentPage, totalPages, prefix) {
     buttons.push({ text: '⬅️ Prev', callback_data: `${prefix}_${currentPage - 1}` });
   }
 
-  buttons.push({ text: `${currentPage}/${totalPages}`, callback_data: 'noop' });
+  buttons.push({ text: `${currentPage}/${totalPages}`, callback_data: 'noop' }); // No operation
 
   if (currentPage < totalPages) {
     buttons.push({ text: 'Next ➡️', callback_data: `${prefix}_${currentPage + 1}` });
@@ -705,6 +868,12 @@ bot.onText(/\/addadmin(?:@\w+)?/, async (msg) => {
 
   const targetUserId = msg.reply_to_message.from.id;
 
+  if (targetUserId === OWNER_ID) {
+    const reply = await bot.sendMessage(chatId, '❌ Gak bisa jadikan owner admin lagi, dia udah owner! 👑');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
   if (adminCache.has(targetUserId)) {
     const reply = await bot.sendMessage(chatId, '⚠️ Udah jadi admin cok!');
     autoDeleteMessage(chatId, reply.message_id, 3);
@@ -747,9 +916,9 @@ bot.on('new_chat_members', async (msg) => {
     try {
       await bot.sendMessage(chatId, welcomeMsg, { parse_mode: 'Markdown' });
       notificationStats.welcomesSent++;
-      console.log(`👋 Welcome message sent to ${firstName} (${member.id})`);
+      logger.info(`👋 Welcome message sent to ${firstName} (${member.id})`);
     } catch (err) {
-      console.error('❌ Failed to send welcome message:', err.message);
+      logger.error('❌ Failed to send welcome message:', err.message);
     }
   }
 });
@@ -758,10 +927,9 @@ bot.on('new_chat_members', async (msg) => {
 let dailyStatsInterval = null;
 
 function startDailyStats() {
-  // Send daily stats at 9 AM (adjust as needed)
   const now = new Date();
   const scheduledTime = new Date();
-  scheduledTime.setHours(9, 0, 0, 0);
+  scheduledTime.setHours(9, 0, 0, 0); // 9 AM
 
   if (scheduledTime <= now) {
     scheduledTime.setDate(scheduledTime.getDate() + 1);
@@ -771,11 +939,10 @@ function startDailyStats() {
 
   setTimeout(() => {
     sendDailyStats();
-    // Then run every 24 hours
     dailyStatsInterval = setInterval(sendDailyStats, 24 * 60 * 60 * 1000);
   }, timeUntilFirstRun);
 
-  console.log(`📊 Daily stats scheduled for ${scheduledTime.toLocaleString('id-ID')}`);
+  logger.info(`📊 Daily stats scheduled for ${scheduledTime.toLocaleString('id-ID')}`);
 }
 
 async function sendDailyStats() {
@@ -795,8 +962,8 @@ async function sendDailyStats() {
     `🚫 Blacklisted Users: ${blacklistCount}\n` +
     `⏱️ Uptime: ${uptimeDays}d ${uptimeHours % 24}h\n\n` +
     `${AI_ENABLED ? `🤖 *AI Stats:*\n` +
-    `Total Requests: ${aiStats.totalRequests}\n` +
-    `Success Rate: ${aiStats.totalRequests > 0 ? ((aiStats.successfulResponses / aiStats.totalRequests) * 100).toFixed(1) : 0}%\n` +
+    `Total Requests: ${AI_STATS.totalRequests}\n` +
+    `Success Rate: ${AI_STATS.totalRequests > 0 ? ((AI_STATS.successfulResponses / AI_STATS.totalRequests) * 100).toFixed(1) : 0}%\n` +
     `Active Conversations: ${aiConversations.size}\n\n` : ''}` +
     `🔔 *Notifications:*\n` +
     `Welcomes Sent: ${notificationStats.welcomesSent}\n` +
@@ -806,9 +973,9 @@ async function sendDailyStats() {
   try {
     await bot.sendMessage(OWNER_ID, statsMsg, { parse_mode: 'Markdown' });
     notificationStats.dailyStatsSent++;
-    console.log('📊 Daily stats sent to owner');
+    logger.info('📊 Daily stats sent to owner');
   } catch (err) {
-    console.error('❌ Failed to send daily stats:', err.message);
+    logger.error('❌ Failed to send daily stats:', err.message);
   }
 }
 
@@ -827,9 +994,9 @@ function notifyCriticalError(errorMsg, context = {}) {
   bot.sendMessage(OWNER_ID, alertMsg, { parse_mode: 'Markdown' })
     .then(() => {
       notificationStats.alertsSent++;
-      console.log('🚨 Critical error notification sent to owner');
+      logger.info('🚨 Critical error notification sent to owner');
     })
-    .catch(err => console.error('Failed to send error notification:', err.message));
+    .catch(err => logger.error('Failed to send error notification:', err.message));
 }
 
 // Start daily stats on bot initialization
@@ -1029,7 +1196,7 @@ bot.onText(/\/timeout(?:@\w+)?\s+(\d+)/, async (msg, match) => {
   const until = Date.now() + (minutes * 60 * 1000);
   spamTimeouts.set(targetUserId, { until, reason: 'spam' });
 
-  const reply = await bot.sendMessage(chatId, 
+  const reply = await bot.sendMessage(chatId,
     `⏱️ User di-timeout!\n` +
     `👤 User ID: ${targetUserId}\n` +
     `⏰ Durasi: ${minutes} menit`, {
@@ -1093,7 +1260,6 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     return;
   }
 
-  // Validasi filter name
   if (filterName.length < 2 || filterName.length > 50) {
     const reply = await bot.sendMessage(chatId, '⚠️ Nama filter harus 2-50 karakter!');
     autoDeleteMessage(chatId, reply.message_id, 3);
@@ -1108,8 +1274,7 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
 
   const replyMsg = msg.reply_to_message;
 
-  // Validasi: harus ada minimal text atau media
-  const hasMedia = replyMsg.photo || replyMsg.video || replyMsg.document || 
+  const hasMedia = replyMsg.photo || replyMsg.video || replyMsg.document ||
                    replyMsg.animation || replyMsg.audio || replyMsg.voice || replyMsg.sticker;
   const hasText = (replyMsg.text && replyMsg.text.trim()) || (replyMsg.caption && replyMsg.caption.trim());
 
@@ -1119,7 +1284,6 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     return;
   }
 
-  // Simpan entities HANYA jika ada, dan dalam format yang benar
   const filterData = {
     text: replyMsg.text || replyMsg.caption || '',
     photo: replyMsg.photo ? replyMsg.photo[replyMsg.photo.length - 1].file_id : null,
@@ -1133,10 +1297,6 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     created_by: userId
   };
 
-  // CRITICAL FIX: Simpan entities DAN caption_entities secara TERPISAH (bukan else-if!)
-  // Untuk text messages: gunakan entities
-  // Untuk media dengan caption: gunakan caption_entities
-  // Beberapa cases bisa punya keduanya, jadi simpan keduanya jika ada
   if (replyMsg.entities && replyMsg.entities.length > 0) {
     filterData.entities = replyMsg.entities;
   }
@@ -1144,10 +1304,9 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     filterData.caption_entities = replyMsg.caption_entities;
   }
 
-  // 💬 FITUR BARU: Simpan inline keyboard/buttons jika ada
   if (replyMsg.reply_markup && replyMsg.reply_markup.inline_keyboard) {
     filterData.buttons = replyMsg.reply_markup.inline_keyboard;
-    console.log(`✅ Filter ${filterName} menyimpan ${replyMsg.reply_markup.inline_keyboard.length} baris button`);
+    logger.info(`✅ Filter ${filterName} menyimpan ${replyMsg.reply_markup.inline_keyboard.length} baris button`);
   }
 
   filters[filterName] = filterData;
@@ -1262,7 +1421,6 @@ bot.onText(/^!info\s+(\w+)/, async (msg, match) => {
     return;
   }
 
-  // Determine media type
   let mediaType = '📝 Teks';
   if (filter.photo) mediaType = '🖼️ Photo';
   else if (filter.video) mediaType = '🎥 Video';
@@ -1273,7 +1431,7 @@ bot.onText(/^!info\s+(\w+)/, async (msg, match) => {
   else if (filter.sticker) mediaType = '🎨 Sticker';
 
   const hasText = filter.text && filter.text.length > 0;
-  const hasEntities = (filter.entities && filter.entities.length > 0) || 
+  const hasEntities = (filter.entities && filter.entities.length > 0) ||
                       (filter.caption_entities && filter.caption_entities.length > 0);
   const textLength = filter.text ? filter.text.length : 0;
 
@@ -1298,28 +1456,20 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
-  // Security checks
   if (isBlacklisted(userId)) return;
   if (isTimedOut(userId)) return;
 
-  // Deteksi tipe chat: private (DM) atau group
   const isPrivateChat = msg.chat.type === 'private';
   const isGroupChat = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
 
-  // Smart triggering berdasarkan tipe chat:
-  // - Private chat: AI respon SEMUA pesan
-  // - Group chat: AI cuma respon kalau di-reply ke bot
   const botInfo = await bot.getMe();
   const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.id === botInfo.id;
 
-  if (isGroupChat && !isReplyToBot) return; // Di grup, HARUS reply ke bot
-  // Di private chat, langsung lanjut (respon semua pesan)
+  if (isGroupChat && !isReplyToBot) return;
 
-  // Get user message
   let userMessage = msg.text.trim();
   if (!userMessage || userMessage.length < 2) return;
 
-  // AI-specific rate limiting (cooldown per user)
   const lastAIRequest = aiRateLimits.get(userId) || 0;
   const timeSinceLastRequest = Date.now() - lastAIRequest;
 
@@ -1330,41 +1480,32 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // Update AI rate limit timestamp
   aiRateLimits.set(userId, Date.now());
 
   try {
-    // Show typing indicator repeatedly while processing (Telegram typing lasts 5 seconds)
     const typingInterval = setInterval(() => {
       bot.sendChatAction(chatId, 'typing').catch(() => {});
     }, 4000);
 
     try {
-      // Initial typing indicator
       await bot.sendChatAction(chatId, 'typing');
-
-      // Call AI
       const { response, model } = await callGroqAPI(userMessage, userId);
-
-      // Stop typing indicator
       clearInterval(typingInterval);
 
-      // Send response
       const reply = await bot.sendMessage(chatId, response, {
         reply_to_message_id: msg.message_id
       });
 
-      console.log(`🤖 Hoki responded using ${model}`);
+      logger.info(`🤖 Hoki responded using ${model}`);
     } finally {
-      // Always clear the typing interval
       clearInterval(typingInterval);
     }
 
   } catch (err) {
-    console.error('❌ AI Error:', err.message);
+    logger.error('❌ AI Error:', err.message);
 
     let errorMsg = 'Maaf nih~ Lagi error. Coba lagi yaa 🙏';
-    if (err.message.includes('penuh')) {
+    if (err.message.includes('rate limited') || err.message.includes('overload')) {
       errorMsg = err.message;
     }
 
@@ -1419,18 +1560,30 @@ bot.onText(/^!aistats/, async (msg) => {
     return;
   }
 
-  const modelStats = AI_MODELS.map(m => 
-    `${m.name}:\n  Used: ${m.used}/${m.limit}\n  Quality: ${m.quality}/10\n  Use: ${m.use}`
+  const routerStats = aiRouter.getStats();
+
+  const modelStats = routerStats.models.map(m =>
+    `${m.available} Tier ${m.tier}: \`${m.name.split('/').pop()}\`\n` +
+    `   Quality: ${m.quality}/10\n` +
+    `   RPM: ${m.rpm} | Daily: ${m.daily}\n` +
+    `   ${m.description}`
   ).join('\n\n');
 
   const statsMsg = `🤖 *AI Hoki Statistics*\n\n` +
-    `📊 *Overall:*\n` +
-    `Total Requests: ${aiStats.totalRequests}\n` +
-    `Successful: ${aiStats.successfulResponses}\n` +
-    `Failed: ${aiStats.failedResponses}\n` +
-    `Success Rate: ${aiStats.totalRequests > 0 ? ((aiStats.successfulResponses / aiStats.totalRequests) * 100).toFixed(1) : 0}%\n\n` +
-    `🎯 *Model Usage:*\n${modelStats}\n\n` +
-    `💬 *Active Conversations:* ${aiConversations.size}`;
+    `📊 *Overall Stats:*\n` +
+    `Total Requests: ${AI_STATS.totalRequests}\n` +
+    `Successful: ${AI_STATS.successfulResponses}\n` +
+    `Failed: ${AI_STATS.failedResponses}\n` +
+    `Success Rate: ${AI_STATS.totalRequests > 0 ?
+      ((AI_STATS.successfulResponses / AI_STATS.totalRequests) * 100).toFixed(1) : 0}%\n\n` +
+    `🤖 *Models Status:*\n${modelStats}\n\n` +
+    `🛡️ *Guard Model:*\n` +
+    `${routerStats.guard.available} \`${routerStats.guard.name}\`\n` +
+    `RPM: ${routerStats.guard.rpm} | Daily: ${routerStats.guard.daily}\n\n` +
+    `📈 *Model Usage:*\n` +
+    Object.entries(AI_STATS.modelUsage)
+      .map(([model, count]) => `${model.split('/').pop()}: ${count}`)
+      .join('\n');
 
   const reply = await bot.sendMessage(chatId, statsMsg, { parse_mode: 'Markdown' });
   autoDeleteMessage(chatId, reply.message_id, 10);
@@ -1450,14 +1603,14 @@ bot.onText(/^!aireset/, async (msg) => {
     return;
   }
 
-  // Reset model usage counters
-  AI_MODELS.forEach(m => m.used = 0);
+  // Reset model usage counters via router
+  aiRouter.resetDailyCounters();
 
   // Clear conversation history
   aiConversations.clear();
 
   // Reset stats
-  aiStats = {
+  AI_STATS = {
     totalRequests: 0,
     successfulResponses: 0,
     failedResponses: 0,
@@ -1518,7 +1671,6 @@ bot.onText(/^!export/, async (msg) => {
   }
 
   try {
-    // Show typing while preparing export
     await bot.sendChatAction(chatId, 'upload_document');
 
     const exportData = {
@@ -1540,7 +1692,7 @@ bot.onText(/^!export/, async (msg) => {
       contentType: 'application/json'
     });
   } catch (err) {
-    console.error('Export error:', err);
+    logger.error('Export error:', err);
     const reply = await bot.sendMessage(chatId, '❌ Gagal export filters!');
     autoDeleteMessage(chatId, reply.message_id, 3);
   }
@@ -1584,7 +1736,6 @@ bot.onText(/^!clone\s+(\w+)\s+(\w+)/, async (msg, match) => {
     return;
   }
 
-  // Deep copy filter
   filters[targetFilter] = JSON.parse(JSON.stringify(filters[sourceFilter]));
   await saveJSON(FILTERS_FILE, filters);
 
@@ -1632,7 +1783,6 @@ bot.onText(/^!rename\s+(\w+)\s+(\w+)/, async (msg, match) => {
     return;
   }
 
-  // Rename
   filters[newName] = filters[oldName];
   delete filters[oldName];
   await saveJSON(FILTERS_FILE, filters);
@@ -1671,7 +1821,7 @@ bot.on('callback_query', async (query) => {
       message_id: messageId,
       parse_mode: 'Markdown',
       reply_markup: keyboard
-    }).catch(() => {});
+    }).catch((err) => logger.warn(`Failed to edit message: ${err.message}`));
 
     bot.answerCallbackQuery(query.id);
   }
@@ -1681,7 +1831,7 @@ bot.on('callback_query', async (query) => {
 bot.on('message', async (msg) => {
   if (!msg.text) return;
   if (msg.text.startsWith('/')) return;
-  if (msg.text.startsWith('!add') || msg.text.startsWith('!del') || 
+  if (msg.text.startsWith('!add') || msg.text.startsWith('!del') ||
       msg.text.startsWith('!list') || msg.text.startsWith('!status')) return;
 
   const chatId = msg.chat.id;
@@ -1689,7 +1839,6 @@ bot.on('message', async (msg) => {
   let filterName = null;
   let filter = null;
 
-  // Priority 1: Exact match dengan ! prefix (command style)
   if (msg.text.startsWith('!')) {
     const exactName = msg.text.substring(1).trim().toLowerCase();
     if (filters[exactName]) {
@@ -1698,7 +1847,6 @@ bot.on('message', async (msg) => {
     }
   }
 
-  // Priority 2: Exact match tanpa ! (jika seluruh pesan adalah nama filter)
   if (!filter) {
     const exactName = msg.text.trim().toLowerCase();
     if (filters[exactName]) {
@@ -1707,12 +1855,8 @@ bot.on('message', async (msg) => {
     }
   }
 
-  // Priority 3: Keyword detection dalam pesan panjang (cari filter pertama yang match)
   if (!filter) {
-    // Dapatkan semua filter names
     const allFilterNames = Object.keys(filters);
-
-    // Cari filter pertama yang muncul di text (by position)
     let earliestPosition = Infinity;
     let earliestFilter = null;
 
@@ -1730,33 +1874,28 @@ bot.on('message', async (msg) => {
     }
   }
 
-  // Jika tidak ada filter yang match, skip
   if (!filter) return;
 
-  // Security: Check blacklist dan timeout
   if (isBlacklisted(msg.from.id)) {
-    console.log(`🚫 Blacklisted user ${msg.from.id} tried to use filter`);
+    logger.info(`🚫 Blacklisted user ${msg.from.id} tried to use filter`);
     return;
   }
 
   if (isTimedOut(msg.from.id)) {
     const remaining = getTimeoutRemaining(msg.from.id);
-    const reply = await bot.sendMessage(chatId, 
+    const reply = await bot.sendMessage(chatId,
       `⏱️ Kamu masih timeout ${remaining} detik lagi~`
     );
     autoDeleteMessage(chatId, reply.message_id, 3);
     return;
   }
 
-  // DEBUG: Log filter trigger
-  console.log(`🔍 Filter triggered: "${filterName}"`);
-  console.log('Filter data:', JSON.stringify(filter, null, 2));
+  logger.info(`🔍 Filter triggered: "${filterName}"`);
 
-  // Prepare reply button if filter has buttons
   let replyMarkup = null;
   if (filter.buttons && filter.buttons.length > 0) {
     replyMarkup = {
-      inline_keyboard: filter.buttons.map(row => 
+      inline_keyboard: filter.buttons.map(row =>
         row.map(btn => ({
           text: btn.text,
           url: btn.url,
@@ -1767,113 +1906,78 @@ bot.on('message', async (msg) => {
   }
 
   try {
-    // CRITICAL: entities dan parse_mode TIDAK BISA digunakan bersamaan di Telegram API!
-    // Jika ada entities -> gunakan entities saja, JANGAN tambahkan parse_mode
-    // Jika tidak ada entities -> gunakan parse_mode untuk fallback Markdown
-
-    // CRITICAL FIX: Convert entities to HTML for text messages too
     let formattedText = filter.text;
     let textParseMode = null;
 
     if (filter.entities && filter.entities.length > 0) {
-      // Convert entities to HTML format
       formattedText = entitiesToHTML(filter.text, filter.entities);
       textParseMode = 'HTML';
-      console.log('✅ Converted text entities to HTML');
+      logger.debug('✅ Converted text entities to HTML');
     }
-    // NO FALLBACK to Markdown for plain text - send as-is without parse_mode
-    // Markdown fallback would break text with special chars like _, *, [, etc
 
-    // CRITICAL FIX: Convert entities to HTML since caption_entities doesn't work in node-telegram-bot-api
     let formattedCaption = filter.text;
     let captionParseMode = null;
 
     if (filter.text && filter.text.trim().length > 0) {
-      // Ada text/caption yang tidak kosong
       if (filter.caption_entities && filter.caption_entities.length > 0) {
-        // PRIORITY 1: Convert caption_entities to HTML format
         formattedCaption = entitiesToHTML(filter.text, filter.caption_entities);
         captionParseMode = 'HTML';
-        console.log('✅ Converted caption_entities to HTML');
-        console.log('Original:', filter.text);
-        console.log('Formatted:', formattedCaption);
+        logger.debug('✅ Converted caption_entities to HTML');
       } else if (filter.entities && filter.entities.length > 0) {
-        // PRIORITY 2: Fallback ke entities untuk backward compatibility
         formattedCaption = entitiesToHTML(filter.text, filter.entities);
         captionParseMode = 'HTML';
-        console.log('⚠️ Converted entities to HTML (fallback)');
+        logger.debug('⚠️ Converted entities to HTML (fallback)');
       }
-      // NO FALLBACK to Markdown for plain text - send as-is without parse_mode
-      // Markdown fallback would break text with special chars like _, *, [, etc
-      // captionParseMode remains null for plain text
     }
 
     if (filter.photo) {
       const photoOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
         photoOptions.caption = formattedCaption;
-        if (captionParseMode) {
-          photoOptions.parse_mode = captionParseMode;
-        }
+        if (captionParseMode) photoOptions.parse_mode = captionParseMode;
       }
       if (replyMarkup) photoOptions.reply_markup = replyMarkup;
-      console.log('📸 Sending photo with HTML caption:', photoOptions.caption);
       await bot.sendPhoto(chatId, filter.photo, photoOptions);
 
     } else if (filter.video) {
       const videoOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
         videoOptions.caption = formattedCaption;
-        if (captionParseMode) {
-          videoOptions.parse_mode = captionParseMode;
-        }
+        if (captionParseMode) videoOptions.parse_mode = captionParseMode;
       }
       if (replyMarkup) videoOptions.reply_markup = replyMarkup;
-      console.log('🎥 Sending video with HTML caption:', videoOptions.caption);
       await bot.sendVideo(chatId, filter.video, videoOptions);
 
     } else if (filter.animation) {
       const animOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
         animOptions.caption = formattedCaption;
-        if (captionParseMode) {
-          animOptions.parse_mode = captionParseMode;
-        }
+        if (captionParseMode) animOptions.parse_mode = captionParseMode;
       }
-      console.log('🎞️ Sending animation with HTML caption');
       await bot.sendAnimation(chatId, filter.animation, animOptions);
 
     } else if (filter.document) {
       const docOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
         docOptions.caption = formattedCaption;
-        if (captionParseMode) {
-          docOptions.parse_mode = captionParseMode;
-        }
+        if (captionParseMode) docOptions.parse_mode = captionParseMode;
       }
-      console.log('📄 Sending document with HTML caption');
       await bot.sendDocument(chatId, filter.document, docOptions);
 
     } else if (filter.audio) {
       const audioOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
         audioOptions.caption = formattedCaption;
-        if (captionParseMode) {
-          audioOptions.parse_mode = captionParseMode;
-        }
+        if (captionParseMode) audioOptions.parse_mode = captionParseMode;
       }
-      console.log('🎵 Sending audio with HTML caption');
       await bot.sendAudio(chatId, filter.audio, audioOptions);
 
     } else if (filter.voice) {
       const voiceOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
         voiceOptions.caption = formattedCaption;
-        if (captionParseMode) {
-          voiceOptions.parse_mode = captionParseMode;
-        }
+        if (captionParseMode) voiceOptions.parse_mode = captionParseMode;
       }
-      console.log('🎤 Sending voice with HTML caption');
       await bot.sendVoice(chatId, filter.voice, voiceOptions);
     } else if (filter.sticker) {
       await bot.sendSticker(chatId, filter.sticker);
@@ -1885,27 +1989,17 @@ bot.on('message', async (msg) => {
     } else if (formattedText && formattedText.trim().length > 0) {
       const msgOptions = {};
       if (textParseMode) msgOptions.parse_mode = textParseMode;
-      console.log('💬 Sending text message with HTML formatting');
       await bot.sendMessage(chatId, formattedText, msgOptions);
     }
   } catch (err) {
-    console.error('❌ Filter send error:', err.message);
-    console.error('Filter name:', filterName);
-    console.error('Error code:', err.code);
+    logger.error(`Filter send error: ${err.message}`, { filterName, code: err.code });
 
-    // Detailed logging untuk debugging
-    if (err.response && err.response.body) {
-      console.error('API Response:', JSON.stringify(err.response.body, null, 2));
-    }
-
-    // IMPROVED: Kirim notification ke admin yang trigger, dan juga ke owner untuk critical errors
     if (isAdmin(msg.from.id)) {
       bot.sendMessage(chatId, `⚠️ Error sending filter *${filterName}*:\n\`${err.message}\``, {
         parse_mode: 'Markdown'
       }).catch(() => {});
     }
 
-    // Notify owner untuk critical errors (kecuali owner yang trigger sendiri)
     if (msg.from.id !== OWNER_ID && (err.code === 'EFATAL' || err.message.includes('parse'))) {
       notifyCriticalError(err.message, {
         chatId: chatId,
@@ -1929,19 +2023,10 @@ bot.onText(/^!status/, async (msg) => {
     return;
   }
 
-  // Show typing while calculating stats
   await bot.sendChatAction(chatId, 'typing');
 
-  // Filter statistics
   const filterStats = {
-    text: 0,
-    photo: 0,
-    video: 0,
-    document: 0,
-    animation: 0,
-    audio: 0,
-    voice: 0,
-    sticker: 0
+    text: 0, photo: 0, video: 0, document: 0, animation: 0, audio: 0, voice: 0, sticker: 0
   };
 
   Object.values(filters).forEach(filter => {
@@ -1959,9 +2044,8 @@ bot.onText(/^!status/, async (msg) => {
   const memMB = (memUsage.heapUsed / 1024 / 1024).toFixed(2);
   const uptime = process.uptime();
   const uptimeHours = Math.floor(uptime / 3600);
-  const uptimeMinutes = Math.floor((uptime % 3600) / 60);
+  const uptimeDays = Math.floor(uptimeHours / 24);
 
-  // Calculate oldest filter
   let oldestFilter = null;
   let oldestDate = null;
   Object.entries(filters).forEach(([name, data]) => {
@@ -1980,7 +2064,7 @@ bot.onText(/^!status/, async (msg) => {
     `⚡ Active Timers: *${deleteTimers.size}*\n` +
     `🗑️ Rate Limits Tracked: *${rateLimits.size}*\n` +
     `💾 Memory: *${memMB} MB*\n` +
-    `⏱️ Uptime: *${uptimeHours}h ${uptimeMinutes}m*\n\n` +
+    `⏱️ Uptime: *${uptimeDays}d ${uptimeHours % 24}h ${Math.floor((uptime % 3600) / 60)}m*\n\n` +
     `📦 *Filter Breakdown:*\n` +
     `📝 Text: ${filterStats.text}\n` +
     `🖼️ Photo: ${filterStats.photo}\n` +
@@ -1990,7 +2074,7 @@ bot.onText(/^!status/, async (msg) => {
     `🎵 Audio: ${filterStats.audio}\n` +
     `🎤 Voice: ${filterStats.voice}\n` +
     `🎨 Sticker: ${filterStats.sticker}\n\n` +
-    (oldestFilter ? `📅 Oldest Filter: \`${oldestFilter}\`\n\n` : '') +
+    (oldestFilter ? `📅 Oldest Filter: \`${oldestFilter}\` (${oldestDate.toLocaleDateString('id-ID')})\n\n` : '') +
     `✅ Status: *Online* 🚀`;
 
   const reply = await bot.sendMessage(chatId, status, { parse_mode: 'Markdown' });
@@ -2000,14 +2084,12 @@ bot.onText(/^!status/, async (msg) => {
 // Enhanced error handling for slow internet
 let pollingErrorCount = 0;
 let lastErrorTime = 0;
-const MAX_RETRY_ATTEMPTS = 10; // More attempts for slow internet
+const MAX_RETRY_ATTEMPTS = 10;
 
 bot.on('polling_error', (error) => {
   const now = Date.now();
+  logger.error('⚠️ Polling error:', { code: error.code, message: error.message });
 
-  console.error('⚠️ Polling error:', error.code, error.message);
-
-  // Reset counter if last error was more than 2 minutes ago
   if (now - lastErrorTime > 120000) {
     pollingErrorCount = 0;
   }
@@ -2015,52 +2097,42 @@ bot.on('polling_error', (error) => {
   lastErrorTime = now;
   pollingErrorCount++;
 
-  // Don't exit immediately on network errors for slow connections
-  const isNetworkError = error.code === 'EFATAL' || 
-                         error.code === 'ETELEGRAM' || 
+  const isNetworkError = error.code === 'EFATAL' ||
+                         error.code === 'ETELEGRAM' ||
                          error.code === 'ETIMEDOUT' ||
                          error.message.includes('getUpdates');
 
   if (pollingErrorCount >= MAX_RETRY_ATTEMPTS && !isNetworkError) {
-    console.error('❌ Max retry attempts reached. Possible issues:');
-    console.error('   1. BOT_TOKEN tidak valid');
-    console.error('   2. Bot instance lain menggunakan token yang sama');
-    console.error('\n💡 Solusi:');
-    console.error('   - Cek BOT_TOKEN di .env');
-    console.error('   - Stop bot instance lain yang menggunakan token ini');
+    logger.error('❌ Max retry attempts reached. Possible issues:', {
+      token_valid: process.env.BOT_TOKEN ? 'present' : 'missing',
+      other_instance: 'check if another instance is running with the same token'
+    });
     process.exit(1);
   }
 
-  // Longer backoff for slow internet: 5s, 10s, 15s, 20s, max 30s
   const backoffDelay = Math.min(5000 * Math.min(pollingErrorCount, 6), 30000);
-
-  console.log(`🔄 Retry ${pollingErrorCount}/${MAX_RETRY_ATTEMPTS} in ${backoffDelay/1000}s (slow internet mode)...`);
+  logger.info(`🔄 Retry ${pollingErrorCount}/${MAX_RETRY_ATTEMPTS} in ${backoffDelay/1000}s (slow internet mode)...`);
 
   setTimeout(() => {
     bot.stopPolling().then(() => {
       bot.startPolling({ restart: true });
     }).catch(err => {
-      console.error('Failed to restart polling:', err.message);
+      logger.error('Failed to restart polling:', err.message);
     });
   }, backoffDelay);
 });
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
-  console.log('\n🛑 Shutting down gracefully...');
-
-  // Clear all timers
+  logger.info('\n🛑 Shutting down gracefully...');
   deleteTimers.forEach(timer => clearTimeout(timer));
   deleteTimers.clear();
-
-  // Stop polling
   await bot.stopPolling();
-
-  console.log('👋 Bot stopped');
+  logger.info('👋 Bot stopped');
   process.exit(0);
 });
 
-// Health check command untuk monitoring
+// Health check command for monitoring
 bot.onText(/^!health/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -2074,7 +2146,9 @@ bot.onText(/^!health/, async (msg) => {
     filters: Object.keys(filters).length,
     admins: admins.length,
     active_timers: deleteTimers.size,
-    rate_limits: rateLimits.size
+    rate_limits: rateLimits.size,
+    ai_enabled: AI_ENABLED,
+    ai_stats: AI_STATS
   };
 
   await bot.sendMessage(chatId, `\`\`\`json\n${JSON.stringify(health, null, 2)}\n\`\`\``, {
@@ -2090,7 +2164,7 @@ async function retryWithBackoff(fn, maxRetries = 5, initialDelay = 3000) {
     } catch (err) {
       if (i === maxRetries - 1) throw err;
       const delay = initialDelay * Math.pow(2, i);
-      console.log(`⏳ Retry ${i + 1}/${maxRetries} in ${delay/1000}s...`);
+      logger.warn(`⏳ Retry ${i + 1}/${maxRetries} in ${delay/1000}s...`, { error: err.message });
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -2099,55 +2173,42 @@ async function retryWithBackoff(fn, maxRetries = 5, initialDelay = 3000) {
 // Validate bot token and delete webhook before polling
 async function validateBotToken() {
   try {
-    console.log('🔍 Validating bot token...');
+    logger.info('🔍 Validating bot token...');
 
-    // Try to delete webhook with retries (not critical if fails)
     try {
-      await retryWithBackoff(async () => {
-        await bot.deleteWebHook();
-      }, 3, 3000);
-      console.log('✅ Webhook deleted (polling mode)');
+      await retryWithBackoff(async () => { await bot.deleteWebHook(); });
+      logger.info('✅ Webhook deleted (polling mode)');
     } catch (err) {
-      console.log('⚠️ Could not delete webhook (will continue anyway):', err.code || err.message);
-      console.log('💡 Bot will still work, but may have slower startup');
+      logger.warn('⚠️ Could not delete webhook (will continue anyway):', { code: err.code, message: err.message });
     }
 
-    // Validate token with retries for slow connection
-    const me = await retryWithBackoff(async () => {
-      return await bot.getMe();
-    }, 5, 3000);
-
-    console.log(`✅ Bot token valid! Connected as: @${me.username}`);
+    const me = await retryWithBackoff(async () => { return await bot.getMe(); });
+    logger.info(`✅ Bot token valid! Connected as: @${me.username}`);
     return true;
   } catch (err) {
-    console.error('❌ Bot token validation failed:', err.code || err.message);
-    console.error('\n💡 Possible issues:');
-    console.error('   1. BOT_TOKEN tidak valid - cek di .env file');
-    console.error('   2. Koneksi internet terlalu lambat/tidak stabil');
-    console.error('   3. Telegram API unreachable dari network kamu');
-    console.error('\n🔧 Solusi:');
-    console.error('   - Pastikan BOT_TOKEN benar (@BotFather)');
-    console.error('   - Coba gunakan koneksi internet yang lebih stabil');
-    console.error('   - Tunggu beberapa saat dan coba lagi');
+    logger.error('❌ Bot token validation failed:', { code: err.code, message: err.message });
+    logger.error('💡 Possible issues:', {
+      token_invalid: 'check BOT_TOKEN in .env',
+      network_issue: 'check internet connection stability',
+      api_unreachable: 'Telegram API might be unreachable'
+    });
     return false;
   }
 }
 
 // Initialize and start
 initializeData().then(async () => {
-  console.log('📦 Data initialized');
-  console.log(`📊 Loaded ${admins.length} admins and ${Object.keys(filters).length} filters`);
+  logger.info('📦 Data initialized');
+  logger.info(`📊 Loaded ${admins.length} admins and ${Object.keys(filters).length} filters`);
 
-  // Validate token before starting polling
   const isValid = await validateBotToken();
   if (!isValid) {
     process.exit(1);
   }
 
-  // Start polling only after validation
   await bot.startPolling();
-  console.log('🤖 Bot started successfully! 🚀');
+  logger.info('🤖 Bot started successfully! 🚀');
 }).catch(err => {
-  console.error('❌ Failed to initialize:', err);
+  logger.error('❌ Failed to initialize:', err);
   process.exit(1);
 });
