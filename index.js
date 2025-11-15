@@ -141,7 +141,7 @@ setInterval(() => {
       rateLimits.set(userId, validTimestamps);
     }
   }
-  
+
   // Clean up stale AI conversations (older than 1 hour)
   for (const [userId, history] of aiConversations.entries()) {
     if (history.length > MAX_CONVERSATION_LENGTH * 2) {
@@ -177,7 +177,7 @@ async function initializeData() {
 
     // Build admin cache
     adminCache = new Set(admins);
-    
+
     console.log('✅ Data initialized successfully');
     console.log(`🤖 AI Hoki: ${AI_ENABLED ? 'ENABLED ✅' : 'DISABLED (GROQ_API_KEY not set)'}`);
   } catch (err) {
@@ -216,17 +216,17 @@ async function saveJSON(file, data) {
 // We need to convert entities to HTML and use parse_mode instead
 function entitiesToHTML(text, entities) {
   if (!entities || entities.length === 0) return text;
-  
+
   // Build array of text segments with their formatting
   const segments = [];
   let lastOffset = 0;
-  
+
   // Sort entities by offset (ascending)
   const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
-  
+
   for (const entity of sortedEntities) {
     const { offset, length, type, url } = entity;
-    
+
     // Add plain text before this entity
     if (offset > lastOffset) {
       segments.push({
@@ -234,7 +234,7 @@ function entitiesToHTML(text, entities) {
         type: 'plain'
       });
     }
-    
+
     // Add formatted entity
     const content = text.substring(offset, offset + length);
     segments.push({
@@ -243,10 +243,10 @@ function entitiesToHTML(text, entities) {
       url: url,
       user: entity.user
     });
-    
+
     lastOffset = offset + length;
   }
-  
+
   // Add remaining plain text
   if (lastOffset < text.length) {
     segments.push({
@@ -254,7 +254,7 @@ function entitiesToHTML(text, entities) {
       type: 'plain'
     });
   }
-  
+
   // Helper to escape HTML special characters
   function escapeHTML(str) {
     return str.replace(/&/g, '&amp;')
@@ -262,15 +262,15 @@ function entitiesToHTML(text, entities) {
               .replace(/>/g, '&gt;')
               .replace(/"/g, '&quot;');
   }
-  
+
   // Convert segments to HTML
   let result = '';
   for (const segment of segments) {
     const { text: segText, type, url, user } = segment;
-    
+
     // Escape HTML in content for security
     const escapedText = escapeHTML(segText);
-    
+
     switch (type) {
       case 'plain':
         result += escapedText;
@@ -315,7 +315,7 @@ function entitiesToHTML(text, entities) {
         break;
     }
   }
-  
+
   return result;
 }
 
@@ -335,7 +335,7 @@ function isBlacklisted(userId) {
 function isTimedOut(userId) {
   const timeout = spamTimeouts.get(userId);
   if (!timeout) return false;
-  
+
   if (Date.now() > timeout.until) {
     spamTimeouts.delete(userId);
     return false;
@@ -352,17 +352,17 @@ function getTimeoutRemaining(userId) {
 // AI Helper: Get best available model based on user type
 function getBestModel(userId) {
   const userIsAdmin = isAdmin(userId);
-  
+
   // Admin gets priority access to premium model
   if (userIsAdmin) {
     const premiumModel = AI_MODELS.find(m => m.use === 'premium' && m.used < m.limit);
     if (premiumModel) return premiumModel;
   }
-  
+
   // General users get general model
   const generalModel = AI_MODELS.find(m => m.use === 'general' && m.used < m.limit);
   if (generalModel) return generalModel;
-  
+
   // Fallback to emergency model
   const fallbackModel = AI_MODELS.find(m => m.use === 'fallback' && m.used < m.limit);
   return fallbackModel || null;
@@ -372,11 +372,11 @@ function getBestModel(userId) {
 function detectLanguage(text) {
   const indonesianWords = ['apa', 'yang', 'ini', 'itu', 'dan', 'atau', 'saya', 'kamu', 'dia', 'kami', 'mereka', 'dengan', 'untuk', 'dari'];
   const englishWords = ['what', 'that', 'this', 'and', 'or', 'the', 'you', 'they', 'with', 'for', 'from'];
-  
+
   const lowerText = text.toLowerCase();
   const idCount = indonesianWords.filter(word => lowerText.includes(word)).length;
   const enCount = englishWords.filter(word => lowerText.includes(word)).length;
-  
+
   if (idCount > enCount) return 'id-ID';
   if (enCount > idCount) return 'en-US';
   return 'id-ID'; // Default to Indonesian
@@ -388,14 +388,14 @@ async function callGroqAPI(userMessage, userId) {
   if (!model) {
     throw new Error('Semua model AI lagi penuh nih~ Coba lagi nanti yaa 🙏');
   }
-  
+
   // Get conversation history (limit to MAX_CONVERSATION_LENGTH)
   const history = aiConversations.get(userId) || [];
   const recentHistory = history.slice(-Math.min(5, MAX_CONVERSATION_LENGTH));
-  
+
   // Detect user language
   const detectedLang = detectLanguage(userMessage);
-  
+
   // Context-aware: User role detection
   const userRole = isOwner(userId) ? 'Owner' : isAdmin(userId) ? 'Admin' : 'User';
   const roleContext = userRole === 'Owner' 
@@ -403,11 +403,11 @@ async function callGroqAPI(userMessage, userId) {
     : userRole === 'Admin'
     ? 'User ini adalah ADMIN, bisa manage filters, ban user, lihat stats, dll.'
     : 'User ini adalah user biasa, cuma bisa pakai filters yang udah ada.';
-  
+
   // Build filter knowledge base untuk AI
   const filterCount = Object.keys(filters).length;
   let filterKnowledge = '';
-  
+
   if (filterCount > 0) {
     const filterNames = Object.keys(filters).slice(0, 20); // Max 20 filters untuk context
     const filterList = filterNames.map(name => {
@@ -417,7 +417,7 @@ async function callGroqAPI(userMessage, userId) {
       const preview = filter.text ? filter.text.substring(0, 100) : '';
       return `- !${name}: ${hasMedia ? `[${mediaType}]` : ''} ${preview}`;
     }).join('\n');
-    
+
     filterKnowledge = `\n\nFILTER KNOWLEDGE BASE (${filterCount} total filters):
 Bot ini punya ${filterCount} filters yang bisa dipakai user dengan mengetik !namafilter
 ${filterList}
@@ -425,7 +425,7 @@ ${filterCount > 20 ? '\n(dan ' + (filterCount - 20) + ' filters lainnya...)' : '
 
 Kamu bisa referensikan filters ini kalau user tanya tentang fitur bot atau minta bantuan.`;
   }
-  
+
   // Build messages with personality + filter knowledge + context
   const languageInstruction = detectedLang === 'en-US' 
     ? `LANGUAGE: Respond in English (detected from user's message).
@@ -479,11 +479,11 @@ Respond in the detected language and adjust your helpfulness based on user role!
       content: userMessage
     }
   ];
-  
+
   try {
     // Sanitize input (prompt injection prevention)
     const sanitizedMessage = userMessage.replace(/```/g, '').substring(0, 1000);
-    
+
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -498,36 +498,36 @@ Respond in the detected language and adjust your helpfulness based on user role!
         top_p: 0.9
       })
     });
-    
+
     if (!response.ok) {
       throw new Error(`Groq API error: ${response.status}`);
     }
-    
+
     const data = await response.json();
     const aiResponse = data.choices[0].message.content;
-    
+
     // Update model usage
     model.used++;
-    
+
     // Save conversation history (limit to MAX_CONVERSATION_LENGTH pairs)
     history.push({ role: 'user', content: sanitizedMessage });
     history.push({ role: 'assistant', content: aiResponse });
-    
+
     // Keep only recent conversation (prevent memory bloat)
     const trimmedHistory = history.slice(-MAX_CONVERSATION_LENGTH * 2);
     aiConversations.set(userId, trimmedHistory);
-    
+
     // Update stats
     aiStats.totalRequests++;
     aiStats.successfulResponses++;
     aiStats.modelUsage[model.name] = (aiStats.modelUsage[model.name] || 0) + 1;
-    
+
     return {
       response: aiResponse,
       model: model.name,
       tokensUsed: data.usage?.total_tokens || 0
     };
-    
+
   } catch (err) {
     aiStats.failedResponses++;
     throw err;
@@ -733,17 +733,17 @@ const notificationStats = {
 bot.on('new_chat_members', async (msg) => {
   const chatId = msg.chat.id;
   const newMembers = msg.new_chat_members;
-  
+
   for (const member of newMembers) {
     if (member.is_bot) continue; // Skip bots
-    
+
     const firstName = member.first_name || 'User';
     const welcomeMsg = `👋 Selamat datang *${firstName}*!\n\n` +
       `🤖 Gua bot filter management. Ketik /help untuk lihat command!\n` +
       `💡 Lu bisa pakai filter dengan ketik \`!namafilter\`\n\n` +
       `${AI_ENABLED ? '🎯 Chat sama gua dengan reply ke pesan gua!\n\n' : ''}` +
       `Enjoy! 🚀`;
-    
+
     try {
       await bot.sendMessage(chatId, welcomeMsg, { parse_mode: 'Markdown' });
       notificationStats.welcomesSent++;
@@ -762,32 +762,32 @@ function startDailyStats() {
   const now = new Date();
   const scheduledTime = new Date();
   scheduledTime.setHours(9, 0, 0, 0);
-  
+
   if (scheduledTime <= now) {
     scheduledTime.setDate(scheduledTime.getDate() + 1);
   }
-  
+
   const timeUntilFirstRun = scheduledTime - now;
-  
+
   setTimeout(() => {
     sendDailyStats();
     // Then run every 24 hours
     dailyStatsInterval = setInterval(sendDailyStats, 24 * 60 * 60 * 1000);
   }, timeUntilFirstRun);
-  
+
   console.log(`📊 Daily stats scheduled for ${scheduledTime.toLocaleString('id-ID')}`);
 }
 
 async function sendDailyStats() {
   if (!OWNER_ID) return;
-  
+
   const filterCount = Object.keys(filters).length;
   const adminCount = admins.length;
   const blacklistCount = blacklist.length;
   const uptime = process.uptime();
   const uptimeHours = Math.floor(uptime / 3600);
   const uptimeDays = Math.floor(uptimeHours / 24);
-  
+
   const statsMsg = `📊 *Daily Bot Stats*\n\n` +
     `📅 Date: ${new Date().toLocaleDateString('id-ID')}\n\n` +
     `🎯 Total Filters: ${filterCount}\n` +
@@ -802,7 +802,7 @@ async function sendDailyStats() {
     `Welcomes Sent: ${notificationStats.welcomesSent}\n` +
     `Alerts Sent: ${notificationStats.alertsSent}\n\n` +
     `✅ Bot Status: Online 🚀`;
-  
+
   try {
     await bot.sendMessage(OWNER_ID, statsMsg, { parse_mode: 'Markdown' });
     notificationStats.dailyStatsSent++;
@@ -815,7 +815,7 @@ async function sendDailyStats() {
 // Critical error notification
 function notifyCriticalError(errorMsg, context = {}) {
   if (!OWNER_ID) return;
-  
+
   const alertMsg = `🚨 *Critical Error Alert*\n\n` +
     `⏰ Time: ${new Date().toLocaleString('id-ID')}\n` +
     `❌ Error: \`${errorMsg}\`\n` +
@@ -823,7 +823,7 @@ function notifyCriticalError(errorMsg, context = {}) {
     `${context.userId ? `👤 User ID: ${context.userId}\n` : ''}` +
     `${context.filterName ? `🎯 Filter: ${context.filterName}\n` : ''}` +
     `\nPlease check the logs for more details.`;
-  
+
   bot.sendMessage(OWNER_ID, alertMsg, { parse_mode: 'Markdown' })
     .then(() => {
       notificationStats.alertsSent++;
@@ -1294,80 +1294,80 @@ bot.on('message', async (msg) => {
   if (!AI_ENABLED) return;
   if (!msg.text) return;
   if (msg.text.startsWith('/') || msg.text.startsWith('!')) return;
-  
+
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  
+
   // Security checks
   if (isBlacklisted(userId)) return;
   if (isTimedOut(userId)) return;
-  
+
   // Deteksi tipe chat: private (DM) atau group
   const isPrivateChat = msg.chat.type === 'private';
   const isGroupChat = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
-  
+
   // Smart triggering berdasarkan tipe chat:
   // - Private chat: AI respon SEMUA pesan
   // - Group chat: AI cuma respon kalau di-reply ke bot
   const botInfo = await bot.getMe();
   const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.id === botInfo.id;
-  
+
   if (isGroupChat && !isReplyToBot) return; // Di grup, HARUS reply ke bot
   // Di private chat, langsung lanjut (respon semua pesan)
-  
+
   // Get user message
   let userMessage = msg.text.trim();
   if (!userMessage || userMessage.length < 2) return;
-  
+
   // AI-specific rate limiting (cooldown per user)
   const lastAIRequest = aiRateLimits.get(userId) || 0;
   const timeSinceLastRequest = Date.now() - lastAIRequest;
-  
+
   if (timeSinceLastRequest < AI_COOLDOWN_MS) {
     const remainingSeconds = Math.ceil((AI_COOLDOWN_MS - timeSinceLastRequest) / 1000);
     const reply = await bot.sendMessage(chatId, `⏱️ Tunggu ${remainingSeconds} detik lagi yaa~ 😊`);
     autoDeleteMessage(chatId, reply.message_id, 3);
     return;
   }
-  
+
   // Update AI rate limit timestamp
   aiRateLimits.set(userId, Date.now());
-  
+
   try {
     // Show typing indicator repeatedly while processing (Telegram typing lasts 5 seconds)
     const typingInterval = setInterval(() => {
       bot.sendChatAction(chatId, 'typing').catch(() => {});
     }, 4000);
-    
+
     try {
       // Initial typing indicator
       await bot.sendChatAction(chatId, 'typing');
-      
+
       // Call AI
       const { response, model } = await callGroqAPI(userMessage, userId);
-      
+
       // Stop typing indicator
       clearInterval(typingInterval);
-      
+
       // Send response
       const reply = await bot.sendMessage(chatId, response, {
         reply_to_message_id: msg.message_id
       });
-      
+
       console.log(`🤖 Hoki responded using ${model}`);
     } finally {
       // Always clear the typing interval
       clearInterval(typingInterval);
     }
-    
+
   } catch (err) {
     console.error('❌ AI Error:', err.message);
-    
+
     let errorMsg = 'Maaf nih~ Lagi error. Coba lagi yaa 🙏';
     if (err.message.includes('penuh')) {
       errorMsg = err.message;
     }
-    
+
     const reply = await bot.sendMessage(chatId, errorMsg, {
       reply_to_message_id: msg.message_id
     });
@@ -1452,10 +1452,10 @@ bot.onText(/^!aireset/, async (msg) => {
 
   // Reset model usage counters
   AI_MODELS.forEach(m => m.used = 0);
-  
+
   // Clear conversation history
   aiConversations.clear();
-  
+
   // Reset stats
   aiStats = {
     totalRequests: 0,
@@ -1520,7 +1520,7 @@ bot.onText(/^!export/, async (msg) => {
   try {
     // Show typing while preparing export
     await bot.sendChatAction(chatId, 'upload_document');
-    
+
     const exportData = {
       exported_at: new Date().toISOString(),
       filter_count: Object.keys(filters).length,
@@ -1697,7 +1697,7 @@ bot.on('message', async (msg) => {
       filter = filters[exactName];
     }
   }
-  
+
   // Priority 2: Exact match tanpa ! (jika seluruh pesan adalah nama filter)
   if (!filter) {
     const exactName = msg.text.trim().toLowerCase();
@@ -1706,16 +1706,16 @@ bot.on('message', async (msg) => {
       filter = filters[exactName];
     }
   }
-  
+
   // Priority 3: Keyword detection dalam pesan panjang (cari filter pertama yang match)
   if (!filter) {
     // Dapatkan semua filter names
     const allFilterNames = Object.keys(filters);
-    
+
     // Cari filter pertama yang muncul di text (by position)
     let earliestPosition = Infinity;
     let earliestFilter = null;
-    
+
     for (const fname of allFilterNames) {
       const position = lowerText.indexOf(fname);
       if (position !== -1 && position < earliestPosition) {
@@ -1723,7 +1723,7 @@ bot.on('message', async (msg) => {
         earliestFilter = fname;
       }
     }
-    
+
     if (earliestFilter) {
       filterName = earliestFilter;
       filter = filters[earliestFilter];
@@ -1774,7 +1774,7 @@ bot.on('message', async (msg) => {
     // CRITICAL FIX: Convert entities to HTML for text messages too
     let formattedText = filter.text;
     let textParseMode = null;
-    
+
     if (filter.entities && filter.entities.length > 0) {
       // Convert entities to HTML format
       formattedText = entitiesToHTML(filter.text, filter.entities);
@@ -1787,7 +1787,7 @@ bot.on('message', async (msg) => {
     // CRITICAL FIX: Convert entities to HTML since caption_entities doesn't work in node-telegram-bot-api
     let formattedCaption = filter.text;
     let captionParseMode = null;
-    
+
     if (filter.text && filter.text.trim().length > 0) {
       // Ada text/caption yang tidak kosong
       if (filter.caption_entities && filter.caption_entities.length > 0) {
@@ -1819,7 +1819,7 @@ bot.on('message', async (msg) => {
       if (replyMarkup) photoOptions.reply_markup = replyMarkup;
       console.log('📸 Sending photo with HTML caption:', photoOptions.caption);
       await bot.sendPhoto(chatId, filter.photo, photoOptions);
-      
+
     } else if (filter.video) {
       const videoOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
@@ -1831,7 +1831,7 @@ bot.on('message', async (msg) => {
       if (replyMarkup) videoOptions.reply_markup = replyMarkup;
       console.log('🎥 Sending video with HTML caption:', videoOptions.caption);
       await bot.sendVideo(chatId, filter.video, videoOptions);
-      
+
     } else if (filter.animation) {
       const animOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
@@ -1842,7 +1842,7 @@ bot.on('message', async (msg) => {
       }
       console.log('🎞️ Sending animation with HTML caption');
       await bot.sendAnimation(chatId, filter.animation, animOptions);
-      
+
     } else if (filter.document) {
       const docOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
@@ -1853,7 +1853,7 @@ bot.on('message', async (msg) => {
       }
       console.log('📄 Sending document with HTML caption');
       await bot.sendDocument(chatId, filter.document, docOptions);
-      
+
     } else if (filter.audio) {
       const audioOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
@@ -1864,7 +1864,7 @@ bot.on('message', async (msg) => {
       }
       console.log('🎵 Sending audio with HTML caption');
       await bot.sendAudio(chatId, filter.audio, audioOptions);
-      
+
     } else if (filter.voice) {
       const voiceOptions = {};
       if (formattedCaption && formattedCaption.trim().length > 0) {
@@ -1892,19 +1892,19 @@ bot.on('message', async (msg) => {
     console.error('❌ Filter send error:', err.message);
     console.error('Filter name:', filterName);
     console.error('Error code:', err.code);
-    
+
     // Detailed logging untuk debugging
     if (err.response && err.response.body) {
       console.error('API Response:', JSON.stringify(err.response.body, null, 2));
     }
-    
+
     // IMPROVED: Kirim notification ke admin yang trigger, dan juga ke owner untuk critical errors
     if (isAdmin(msg.from.id)) {
       bot.sendMessage(chatId, `⚠️ Error sending filter *${filterName}*:\n\`${err.message}\``, {
         parse_mode: 'Markdown'
       }).catch(() => {});
     }
-    
+
     // Notify owner untuk critical errors (kecuali owner yang trigger sendiri)
     if (msg.from.id !== OWNER_ID && (err.code === 'EFATAL' || err.message.includes('parse'))) {
       notifyCriticalError(err.message, {
@@ -2004,23 +2004,23 @@ const MAX_RETRY_ATTEMPTS = 10; // More attempts for slow internet
 
 bot.on('polling_error', (error) => {
   const now = Date.now();
-  
+
   console.error('⚠️ Polling error:', error.code, error.message);
-  
+
   // Reset counter if last error was more than 2 minutes ago
   if (now - lastErrorTime > 120000) {
     pollingErrorCount = 0;
   }
-  
+
   lastErrorTime = now;
   pollingErrorCount++;
-  
+
   // Don't exit immediately on network errors for slow connections
   const isNetworkError = error.code === 'EFATAL' || 
                          error.code === 'ETELEGRAM' || 
                          error.code === 'ETIMEDOUT' ||
                          error.message.includes('getUpdates');
-  
+
   if (pollingErrorCount >= MAX_RETRY_ATTEMPTS && !isNetworkError) {
     console.error('❌ Max retry attempts reached. Possible issues:');
     console.error('   1. BOT_TOKEN tidak valid');
@@ -2030,12 +2030,12 @@ bot.on('polling_error', (error) => {
     console.error('   - Stop bot instance lain yang menggunakan token ini');
     process.exit(1);
   }
-  
+
   // Longer backoff for slow internet: 5s, 10s, 15s, 20s, max 30s
   const backoffDelay = Math.min(5000 * Math.min(pollingErrorCount, 6), 30000);
-  
+
   console.log(`🔄 Retry ${pollingErrorCount}/${MAX_RETRY_ATTEMPTS} in ${backoffDelay/1000}s (slow internet mode)...`);
-  
+
   setTimeout(() => {
     bot.stopPolling().then(() => {
       bot.startPolling({ restart: true });
@@ -2100,7 +2100,7 @@ async function retryWithBackoff(fn, maxRetries = 5, initialDelay = 3000) {
 async function validateBotToken() {
   try {
     console.log('🔍 Validating bot token...');
-    
+
     // Try to delete webhook with retries (not critical if fails)
     try {
       await retryWithBackoff(async () => {
@@ -2111,12 +2111,12 @@ async function validateBotToken() {
       console.log('⚠️ Could not delete webhook (will continue anyway):', err.code || err.message);
       console.log('💡 Bot will still work, but may have slower startup');
     }
-    
+
     // Validate token with retries for slow connection
     const me = await retryWithBackoff(async () => {
       return await bot.getMe();
     }, 5, 3000);
-    
+
     console.log(`✅ Bot token valid! Connected as: @${me.username}`);
     return true;
   } catch (err) {
@@ -2137,13 +2137,13 @@ async function validateBotToken() {
 initializeData().then(async () => {
   console.log('📦 Data initialized');
   console.log(`📊 Loaded ${admins.length} admins and ${Object.keys(filters).length} filters`);
-  
+
   // Validate token before starting polling
   const isValid = await validateBotToken();
   if (!isValid) {
     process.exit(1);
   }
-  
+
   // Start polling only after validation
   await bot.startPolling();
   console.log('🤖 Bot started successfully! 🚀');
