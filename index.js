@@ -123,9 +123,14 @@ function autoDeleteMessage(chatId, messageId, delayMinutes = 3) {
     clearTimeout(deleteTimers.get(key));
   }
 
-  const timer = setTimeout(() => {
-    bot.deleteMessage(chatId, messageId).catch(() => {});
-    deleteTimers.delete(key);
+  const timer = setTimeout(async () => {
+    try {
+      await bot.deleteMessage(chatId, messageId);
+    } catch (err) {
+      // Ignore errors (message might be already deleted)
+    } finally {
+      deleteTimers.delete(key);
+    }
   }, delayMinutes * 60 * 1000);
 
   deleteTimers.set(key, timer);
@@ -373,6 +378,13 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     return;
   }
 
+  // Validasi filter name
+  if (filterName.length < 2 || filterName.length > 50) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Nama filter harus 2-50 karakter!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
   if (!msg.reply_to_message) {
     const reply = await bot.sendMessage(chatId, '⚠️ Reply ke pesan yang mau dijadiin filter cok!');
     autoDeleteMessage(chatId, reply.message_id, 3);
@@ -380,6 +392,17 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
   }
 
   const replyMsg = msg.reply_to_message;
+
+  // Validasi: harus ada minimal text atau media
+  const hasMedia = replyMsg.photo || replyMsg.video || replyMsg.document || 
+                   replyMsg.animation || replyMsg.audio || replyMsg.voice || replyMsg.sticker;
+  const hasText = (replyMsg.text && replyMsg.text.trim()) || (replyMsg.caption && replyMsg.caption.trim());
+
+  if (!hasMedia && !hasText) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Message harus ada text atau media!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
 
   // Simpan entities HANYA jika ada, dan dalam format yang benar
   const filterData = {
@@ -390,7 +413,9 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     animation: replyMsg.animation ? replyMsg.animation.file_id : null,
     audio: replyMsg.audio ? replyMsg.audio.file_id : null,
     voice: replyMsg.voice ? replyMsg.voice.file_id : null,
-    sticker: replyMsg.sticker ? replyMsg.sticker.file_id : null
+    sticker: replyMsg.sticker ? replyMsg.sticker.file_id : null,
+    created_at: new Date().toISOString(),
+    created_by: userId
   };
 
   // Simpan entities hanya jika benar-benar ada
@@ -401,7 +426,13 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
   }
 
   filters[filterName] = filterData;
-  await saveJSON(FILTERS_FILE, filters);
+  const saved = await saveJSON(FILTERS_FILE, filters);
+
+  if (!saved) {
+    const reply = await bot.sendMessage(chatId, '❌ Gagal save filter! Check logs.');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
 
   const reply = await bot.sendMessage(chatId, `✅ Filter *${filterName}* berhasil ditambah anjir! 🚀`, {
     parse_mode: 'Markdown'
@@ -790,14 +821,11 @@ bot.on('message', async (msg) => {
     }
 
     if (filter.photo) {
-      // Debug logging
-      console.log(`[Filter: ${filterName}] Sending photo with caption options:`, captionOptions);
-
       const photoOptions = {};
-      if (filter.text) {
+      // CRITICAL: Hanya set caption options jika caption benar-benar ada dan tidak kosong
+      if (filter.text && filter.text.trim().length > 0) {
         photoOptions.caption = filter.text;
-        // HANYA tambahkan caption_entities jika ada DAN caption tidak kosong
-        if (captionOptions.caption_entities) {
+        if (captionOptions.caption_entities && captionOptions.caption_entities.length > 0) {
           photoOptions.caption_entities = captionOptions.caption_entities;
         } else if (captionOptions.parse_mode) {
           photoOptions.parse_mode = captionOptions.parse_mode;
@@ -839,10 +867,21 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, filter.text, textOptions);
     }
   } catch (err) {
-    console.error('Filter send error:', err);
-    // Log detail error untuk debugging
+    console.error('❌ Filter send error:', err.message);
     console.error('Filter name:', filterName);
-    console.error('Filter data:', JSON.stringify(filter, null, 2));
+    console.error('Error code:', err.code);
+    
+    // Detailed logging untuk debugging
+    if (err.response && err.response.body) {
+      console.error('API Response:', JSON.stringify(err.response.body, null, 2));
+    }
+    
+    // Kirim notification ke admin jika error
+    if (isAdmin(msg.from.id)) {
+      bot.sendMessage(chatId, `⚠️ Error sending filter *${filterName}*:\n\`${err.message}\``, {
+        parse_mode: 'Markdown'
+      }).catch(() => {});
+    }
   }
 });
 
@@ -888,10 +927,24 @@ bot.onText(/^!status/, async (msg) => {
   const uptimeHours = Math.floor(uptime / 3600);
   const uptimeMinutes = Math.floor((uptime % 3600) / 60);
 
+  // Calculate oldest filter
+  let oldestFilter = null;
+  let oldestDate = null;
+  Object.entries(filters).forEach(([name, data]) => {
+    if (data.created_at) {
+      const date = new Date(data.created_at);
+      if (!oldestDate || date < oldestDate) {
+        oldestDate = date;
+        oldestFilter = name;
+      }
+    }
+  });
+
   const status = `📊 *Status Bot*\n\n` +
     `👑 Total Admin: *${admins.length}*\n` +
     `🎯 Total Filter: *${Object.keys(filters).length}*\n` +
     `⚡ Active Timers: *${deleteTimers.size}*\n` +
+    `🗑️ Rate Limits Tracked: *${rateLimits.size}*\n` +
     `💾 Memory: *${memMB} MB*\n` +
     `⏱️ Uptime: *${uptimeHours}h ${uptimeMinutes}m*\n\n` +
     `📦 *Filter Breakdown:*\n` +
@@ -903,6 +956,7 @@ bot.onText(/^!status/, async (msg) => {
     `🎵 Audio: ${filterStats.audio}\n` +
     `🎤 Voice: ${filterStats.voice}\n` +
     `🎨 Sticker: ${filterStats.sticker}\n\n` +
+    (oldestFilter ? `📅 Oldest Filter: \`${oldestFilter}\`\n\n` : '') +
     `✅ Status: *Online* 🚀`;
 
   const reply = await bot.sendMessage(chatId, status, { parse_mode: 'Markdown' });
@@ -937,8 +991,33 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
+// Health check command untuk monitoring
+bot.onText(/^!health/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  if (!isOwner(userId)) return;
+
+  const health = {
+    status: 'healthy',
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    filters: Object.keys(filters).length,
+    admins: admins.length,
+    active_timers: deleteTimers.size,
+    rate_limits: rateLimits.size
+  };
+
+  await bot.sendMessage(chatId, `\`\`\`json\n${JSON.stringify(health, null, 2)}\n\`\`\``, {
+    parse_mode: 'Markdown'
+  });
+});
+
 // Initialize and start
 initializeData().then(() => {
   console.log('🤖 Bot started anjir! 🚀');
   console.log(`📊 Loaded ${admins.length} admins and ${Object.keys(filters).length} filters`);
+}).catch(err => {
+  console.error('❌ Failed to initialize:', err);
+  process.exit(1);
 });
