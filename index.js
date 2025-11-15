@@ -361,7 +361,29 @@ async function callGroqAPI(userMessage, userId) {
   const history = aiConversations.get(userId) || [];
   const recentHistory = history.slice(-Math.min(5, MAX_CONVERSATION_LENGTH));
   
-  // Build messages with personality
+  // Build filter knowledge base untuk AI
+  const filterCount = Object.keys(filters).length;
+  let filterKnowledge = '';
+  
+  if (filterCount > 0) {
+    const filterNames = Object.keys(filters).slice(0, 20); // Max 20 filters untuk context
+    const filterList = filterNames.map(name => {
+      const filter = filters[name];
+      const hasMedia = filter.photo || filter.video || filter.document || filter.animation;
+      const mediaType = filter.photo ? 'foto' : filter.video ? 'video' : filter.document ? 'dokumen' : filter.animation ? 'GIF' : 'teks';
+      const preview = filter.text ? filter.text.substring(0, 100) : '';
+      return `- !${name}: ${hasMedia ? `[${mediaType}]` : ''} ${preview}`;
+    }).join('\n');
+    
+    filterKnowledge = `\n\nFILTER KNOWLEDGE BASE (${filterCount} total filters):
+Bot ini punya ${filterCount} filters yang bisa dipakai user dengan mengetik !namafilter
+${filterList}
+${filterCount > 20 ? '\n(dan ' + (filterCount - 20) + ' filters lainnya...)' : ''}
+
+Kamu bisa referensikan filters ini kalau user tanya tentang fitur bot atau minta bantuan.`;
+  }
+  
+  // Build messages with personality + filter knowledge
   const messages = [
     {
       role: 'system',
@@ -385,7 +407,7 @@ RULES:
 Contoh gaya chat:
 - "Iya nih, aku bisa bantu! 😊"
 - "Hmm gini sih~ kamu bisa coba..."
-- "Oh itu maksudnya kayak gini yaa..."
+- "Oh itu maksudnya kayak gini yaa..."${filterKnowledge}
 
 Jawab pakai bahasa Indonesia yang natural dan helpful!`
     },
@@ -1098,11 +1120,18 @@ bot.on('message', async (msg) => {
   if (isBlacklisted(userId)) return;
   if (isTimedOut(userId)) return;
   
-  // Smart triggering: Only respond if replied to bot (no need to mention)
+  // Deteksi tipe chat: private (DM) atau group
+  const isPrivateChat = msg.chat.type === 'private';
+  const isGroupChat = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+  
+  // Smart triggering berdasarkan tipe chat:
+  // - Private chat: AI respon SEMUA pesan
+  // - Group chat: AI cuma respon kalau di-reply ke bot
   const botInfo = await bot.getMe();
   const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.id === botInfo.id;
   
-  if (!isReplyToBot) return;
+  if (isGroupChat && !isReplyToBot) return; // Di grup, HARUS reply ke bot
+  // Di private chat, langsung lanjut (respon semua pesan)
   
   // Get user message
   let userMessage = msg.text.trim();
