@@ -41,12 +41,65 @@ const bot = new TelegramBot(process.env.BOT_TOKEN, {
 const OWNER_ID = parseInt(process.env.OWNER_ID);
 const ADMINS_FILE = path.join(__dirname, 'admins.json');
 const FILTERS_FILE = path.join(__dirname, 'filters.json');
+const BLACKLIST_FILE = path.join(__dirname, 'blacklist.json');
 
 // In-memory cache
 let admins = [];
 let filters = {};
+let blacklist = []; // User IDs yang di-blacklist
 let adminCache = new Set();
 let deleteTimers = new Map();
+let spamTimeouts = new Map(); // Track user timeouts
+
+// AI Hoki Configuration
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const AI_ENABLED = GROQ_API_KEY.length > 0;
+
+// Multi-model cascade system
+const AI_MODELS = [
+    {
+        name: 'llama-3.3-70b-versatile',
+        limit: 1000,
+        used: 0,
+        quality: 10,
+        tokensPerMin: 12000,
+        use: 'premium' // Admin priority (Tier 1)
+    },
+    {
+        name: 'llama-3.1-8b-instant',
+        limit: 14400,
+        used: 0,
+        quality: 7,
+        tokensPerMin: 6000,
+        use: 'general' // Untuk semua user (Tier 2)
+    },
+    {
+        name: 'meta-llama/llama-guard-3-8b',
+        limit: 14400,
+        used: 0,
+        quality: 6,
+        tokensPerMin: 15000,
+        use: 'fallback' // Emergency fallback (Tier 3)
+    }
+];
+
+// Hoki AI Personality System
+const HOKI_PERSONALITY = {
+    name: 'Hoki',
+    traits: ['ramah', 'helpful', 'natural', 'concise'],
+    style: ['sih', 'nih', 'yaa', '~'],
+    maxEmoji: 2,
+    language: 'id-ID'
+};
+
+// Conversation tracking untuk analytics
+let aiConversations = new Map(); // userId -> conversation history
+let aiStats = {
+    totalRequests: 0,
+    successfulResponses: 0,
+    failedResponses: 0,
+    modelUsage: {}
+};
 
 // Rate limiting
 const rateLimits = new Map();
@@ -72,6 +125,7 @@ async function initializeData() {
   try {
     admins = await loadJSON(ADMINS_FILE, []);
     filters = await loadJSON(FILTERS_FILE, {});
+    blacklist = await loadJSON(BLACKLIST_FILE, []);
 
     if (OWNER_ID && !admins.includes(OWNER_ID)) {
       admins.push(OWNER_ID);
@@ -80,7 +134,9 @@ async function initializeData() {
 
     // Build admin cache
     adminCache = new Set(admins);
+    
     console.log('✅ Data initialized successfully');
+    console.log(`🤖 AI Hoki: ${AI_ENABLED ? 'ENABLED ✅' : 'DISABLED (GROQ_API_KEY not set)'}`);
   } catch (err) {
     console.error('❌ Initialization error:', err);
   }
@@ -229,6 +285,143 @@ function isOwner(userId) {
   return userId === OWNER_ID;
 }
 
+function isBlacklisted(userId) {
+  return blacklist.includes(userId);
+}
+
+function isTimedOut(userId) {
+  const timeout = spamTimeouts.get(userId);
+  if (!timeout) return false;
+  
+  if (Date.now() > timeout.until) {
+    spamTimeouts.delete(userId);
+    return false;
+  }
+  return true;
+}
+
+function getTimeoutRemaining(userId) {
+  const timeout = spamTimeouts.get(userId);
+  if (!timeout) return 0;
+  return Math.ceil((timeout.until - Date.now()) / 1000);
+}
+
+// AI Helper: Get best available model based on user type
+function getBestModel(userId) {
+  const userIsAdmin = isAdmin(userId);
+  
+  // Admin gets priority access to premium model
+  if (userIsAdmin) {
+    const premiumModel = AI_MODELS.find(m => m.use === 'premium' && m.used < m.limit);
+    if (premiumModel) return premiumModel;
+  }
+  
+  // General users get general model
+  const generalModel = AI_MODELS.find(m => m.use === 'general' && m.used < m.limit);
+  if (generalModel) return generalModel;
+  
+  // Fallback to emergency model
+  const fallbackModel = AI_MODELS.find(m => m.use === 'fallback' && m.used < m.limit);
+  return fallbackModel || null;
+}
+
+// AI Helper: Call Groq API
+async function callGroqAPI(userMessage, userId) {
+  const model = getBestModel(userId);
+  if (!model) {
+    throw new Error('Semua model AI lagi penuh nih~ Coba lagi nanti yaa 🙏');
+  }
+  
+  // Get conversation history (last 5 messages max)
+  const history = aiConversations.get(userId) || [];
+  const recentHistory = history.slice(-5);
+  
+  // Build messages with personality
+  const messages = [
+    {
+      role: 'system',
+      content: `Kamu adalah Hoki, AI assistant yang ramah dan helpful di Telegram bot.
+
+PERSONALITY:
+- Ramah kayak teman baik
+- Helpful dan concise (langsung to the point)
+- Natural pakai bahasa Indonesia sehari-hari
+- Kadang pakai "sih", "nih", "yaa" biar natural
+- Max 1-2 emoji per response
+- Pakai "~" untuk nada lembut
+
+RULES:
+- Jangan bahas politik/agama/hal sensitif
+- Jangan kasih info yang berbahaya
+- Kalau gak tau, bilang jujur
+- Jawaban singkat tapi jelas (2-3 kalimat max kalau bisa)
+- Fokus bantu user dengan pertanyaannya
+
+Contoh gaya chat:
+- "Iya nih, aku bisa bantu! 😊"
+- "Hmm gini sih~ kamu bisa coba..."
+- "Oh itu maksudnya kayak gini yaa..."
+
+Jawab pakai bahasa Indonesia yang natural dan helpful!`
+    },
+    ...recentHistory,
+    {
+      role: 'user',
+      content: userMessage
+    }
+  ];
+  
+  try {
+    // Sanitize input (prompt injection prevention)
+    const sanitizedMessage = userMessage.replace(/```/g, '').substring(0, 1000);
+    
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: model.name,
+        messages: messages,
+        temperature: 0.8,
+        max_tokens: 300, // Concise responses
+        top_p: 0.9
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Groq API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    const aiResponse = data.choices[0].message.content;
+    
+    // Update model usage
+    model.used++;
+    
+    // Save conversation history
+    history.push({ role: 'user', content: sanitizedMessage });
+    history.push({ role: 'assistant', content: aiResponse });
+    aiConversations.set(userId, history);
+    
+    // Update stats
+    aiStats.totalRequests++;
+    aiStats.successfulResponses++;
+    aiStats.modelUsage[model.name] = (aiStats.modelUsage[model.name] || 0) + 1;
+    
+    return {
+      response: aiResponse,
+      model: model.name,
+      tokensUsed: data.usage?.total_tokens || 0
+    };
+    
+  } catch (err) {
+    aiStats.failedResponses++;
+    throw err;
+  }
+}
+
 // Rate limiting
 function checkRateLimit(userId) {
   const now = Date.now();
@@ -333,6 +526,11 @@ bot.onText(/\/help/, async (msg) => {
       `/addadmin - Tambah admin (reply ke orangnya)\n` +
       `/removeadmin - Hapus admin (reply ke orangnya)\n` +
       `/listadmins - Lihat semua admin\n\n` +
+      `🚫 *Security Commands:*\n` +
+      `/blacklist - Ban user (reply ke orangnya)\n` +
+      `/unblacklist - Unban user (reply ke orangnya)\n` +
+      `/listblacklist - Lihat user yang di-ban\n` +
+      `/timeout <menit> - Timeout user (reply)\n\n` +
       `🎯 *Filter Management:*\n` +
       `\`!add\` <nama> - Bikin filter baru (reply ke pesan)\n` +
       `\`!del\` <nama> - Hapus filter\n` +
@@ -346,6 +544,7 @@ bot.onText(/\/help/, async (msg) => {
       `${isOwner(userId) ? '!export - Backup semua filter\n' : ''}` +
       `\n💡 *Cara Pake Filter:*\n` +
       `Ketik \`!namafilter\` atau \`namafilter\`\n\n` +
+      `${AI_ENABLED ? '🤖 *AI Hoki:*\nMention @' + (await bot.getMe()).username + ' untuk chat dengan Hoki!\n\n' : ''}` +
       `📌 *Media Support:*\n` +
       `Text, Photo, Video, Document, GIF, Audio, Voice, Sticker\n\n` +
       `✨ *Format Support:*\n` +
@@ -450,6 +649,158 @@ bot.onText(/\/removeadmin(?:@\w+)?/, async (msg) => {
   await saveJSON(ADMINS_FILE, admins);
 
   const reply = await bot.sendMessage(chatId, `✅ Admin dihapus!\n👤 User ID: ${targetUserId}`, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+// 🚫 BLACKLIST COMMANDS
+bot.onText(/\/blacklist(?:@\w+)?/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!msg.reply_to_message) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Reply ke pesan user yang mau di-ban!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const targetUserId = msg.reply_to_message.from.id;
+
+  if (targetUserId === OWNER_ID || isAdmin(targetUserId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Gak bisa ban admin/owner cok!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (blacklist.includes(targetUserId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ User ini udah di-blacklist!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  blacklist.push(targetUserId);
+  await saveJSON(BLACKLIST_FILE, blacklist);
+
+  const reply = await bot.sendMessage(chatId, `🚫 User banned!\n👤 User ID: ${targetUserId}`, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+bot.onText(/\/unblacklist(?:@\w+)?/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!msg.reply_to_message) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Reply ke pesan user yang mau di-unban!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const targetUserId = msg.reply_to_message.from.id;
+  const index = blacklist.indexOf(targetUserId);
+
+  if (index === -1) {
+    const reply = await bot.sendMessage(chatId, '⚠️ User ini gak ada di blacklist!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  blacklist.splice(index, 1);
+  await saveJSON(BLACKLIST_FILE, blacklist);
+
+  const reply = await bot.sendMessage(chatId, `✅ User unbanned!\n👤 User ID: ${targetUserId}`, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+bot.onText(/\/listblacklist/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (blacklist.length === 0) {
+    const reply = await bot.sendMessage(chatId, '✅ Belum ada user yang di-blacklist!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const blacklistStr = blacklist.map((id, i) => `${i + 1}. User ID: \`${id}\``).join('\n');
+  const reply = await bot.sendMessage(chatId, `🚫 *Blacklisted Users (${blacklist.length}):*\n\n${blacklistStr}`, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+bot.onText(/\/timeout(?:@\w+)?\s+(\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+  const minutes = parseInt(match[1]);
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!msg.reply_to_message) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Reply ke pesan user yang mau di-timeout!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (minutes < 1 || minutes > 1440) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Timeout harus 1-1440 menit (max 24 jam)!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const targetUserId = msg.reply_to_message.from.id;
+
+  if (targetUserId === OWNER_ID || isAdmin(targetUserId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Gak bisa timeout admin/owner cok!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const until = Date.now() + (minutes * 60 * 1000);
+  spamTimeouts.set(targetUserId, { until, reason: 'spam' });
+
+  const reply = await bot.sendMessage(chatId, 
+    `⏱️ User di-timeout!\n` +
+    `👤 User ID: ${targetUserId}\n` +
+    `⏰ Durasi: ${minutes} menit`, {
     parse_mode: 'Markdown'
   });
   autoDeleteMessage(chatId, reply.message_id, 5);
@@ -696,6 +1047,137 @@ bot.onText(/^!info\s+(\w+)/, async (msg, match) => {
 
   const reply = await bot.sendMessage(chatId, infoMsg, {
     parse_mode: 'Markdown'
+
+
+// 🤖 AI HOKI HANDLER
+bot.on('message', async (msg) => {
+  if (!AI_ENABLED) return;
+  if (!msg.text) return;
+  if (msg.text.startsWith('/') || msg.text.startsWith('!')) return;
+  
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  
+  // Security checks
+  if (isBlacklisted(userId)) return;
+  if (isTimedOut(userId)) return;
+  
+  // Smart triggering: Only respond if bot is mentioned or replied to
+  const botInfo = await bot.getMe();
+  const isMentioned = msg.text.includes(`@${botInfo.username}`);
+  const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.id === botInfo.id;
+  
+  if (!isMentioned && !isReplyToBot) return;
+  
+  // Extract message (remove bot mention)
+  let userMessage = msg.text.replace(`@${botInfo.username}`, '').trim();
+  if (!userMessage || userMessage.length < 2) return;
+  
+  // Rate limit check (more lenient for AI)
+  if (!checkRateLimit(userId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Slow down sih~ Tunggu bentar yaa 😅');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+  
+  try {
+    // Send typing indicator
+    await bot.sendChatAction(chatId, 'typing');
+    
+    // Call AI
+    const { response, model } = await callGroqAPI(userMessage, userId);
+    
+    // Send response
+    const reply = await bot.sendMessage(chatId, response, {
+      reply_to_message_id: msg.message_id
+    });
+    
+    console.log(`🤖 Hoki responded using ${model}`);
+    
+  } catch (err) {
+    console.error('❌ AI Error:', err.message);
+    
+    let errorMsg = 'Maaf nih~ Lagi error. Coba lagi yaa 🙏';
+    if (err.message.includes('penuh')) {
+      errorMsg = err.message;
+    }
+    
+    const reply = await bot.sendMessage(chatId, errorMsg, {
+      reply_to_message_id: msg.message_id
+    });
+    autoDeleteMessage(chatId, reply.message_id, 5);
+  }
+});
+
+// 📊 AI STATS COMMAND
+bot.onText(/^!aistats/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!AI_ENABLED) {
+    const reply = await bot.sendMessage(chatId, '⚠️ AI Hoki belum diaktifkan! Set GROQ_API_KEY di .env');
+    autoDeleteMessage(chatId, reply.message_id, 5);
+    return;
+  }
+
+  const modelStats = AI_MODELS.map(m => 
+    `${m.name}:\n  Used: ${m.used}/${m.limit}\n  Quality: ${m.quality}/10\n  Use: ${m.use}`
+  ).join('\n\n');
+
+  const statsMsg = `🤖 *AI Hoki Statistics*\n\n` +
+    `📊 *Overall:*\n` +
+    `Total Requests: ${aiStats.totalRequests}\n` +
+    `Successful: ${aiStats.successfulResponses}\n` +
+    `Failed: ${aiStats.failedResponses}\n` +
+    `Success Rate: ${aiStats.totalRequests > 0 ? ((aiStats.successfulResponses / aiStats.totalRequests) * 100).toFixed(1) : 0}%\n\n` +
+    `🎯 *Model Usage:*\n${modelStats}\n\n` +
+    `💬 *Active Conversations:* ${aiConversations.size}`;
+
+  const reply = await bot.sendMessage(chatId, statsMsg, { parse_mode: 'Markdown' });
+  autoDeleteMessage(chatId, reply.message_id, 10);
+});
+
+// 🔄 AI RESET COMMAND (Owner only)
+bot.onText(/^!aireset/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isOwner(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Cuma owner yang bisa reset AI stats!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  // Reset model usage counters
+  AI_MODELS.forEach(m => m.used = 0);
+  
+  // Clear conversation history
+  aiConversations.clear();
+  
+  // Reset stats
+  aiStats = {
+    totalRequests: 0,
+    successfulResponses: 0,
+    failedResponses: 0,
+    modelUsage: {}
+  };
+
+  const reply = await bot.sendMessage(chatId, '✅ AI stats & conversations berhasil di-reset!');
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
   });
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
@@ -925,9 +1407,38 @@ bot.on('message', async (msg) => {
   const filter = filters[filterName];
   if (!filter) return;
 
+  // Security: Check blacklist dan timeout
+  if (isBlacklisted(msg.from.id)) {
+    console.log(`🚫 Blacklisted user ${msg.from.id} tried to use filter`);
+    return;
+  }
+
+  if (isTimedOut(msg.from.id)) {
+    const remaining = getTimeoutRemaining(msg.from.id);
+    const reply = await bot.sendMessage(chatId, 
+      `⏱️ Kamu masih timeout ${remaining} detik lagi~`
+    );
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
   // DEBUG: Log filter trigger
   console.log(`🔍 Filter triggered: "${filterName}"`);
   console.log('Filter data:', JSON.stringify(filter, null, 2));
+
+  // Prepare reply button if filter has buttons
+  let replyMarkup = null;
+  if (filter.buttons && filter.buttons.length > 0) {
+    replyMarkup = {
+      inline_keyboard: filter.buttons.map(row => 
+        row.map(btn => ({
+          text: btn.text,
+          url: btn.url,
+          callback_data: btn.callback_data
+        }))
+      )
+    };
+  }
 
   try {
     // CRITICAL: entities dan parse_mode TIDAK BISA digunakan bersamaan di Telegram API!
@@ -979,6 +1490,7 @@ bot.on('message', async (msg) => {
           photoOptions.parse_mode = captionParseMode;
         }
       }
+      if (replyMarkup) photoOptions.reply_markup = replyMarkup;
       console.log('📸 Sending photo with HTML caption:', photoOptions.caption);
       await bot.sendPhoto(chatId, filter.photo, photoOptions);
       
@@ -990,6 +1502,7 @@ bot.on('message', async (msg) => {
           videoOptions.parse_mode = captionParseMode;
         }
       }
+      if (replyMarkup) videoOptions.reply_markup = replyMarkup;
       console.log('🎥 Sending video with HTML caption:', videoOptions.caption);
       await bot.sendVideo(chatId, filter.video, videoOptions);
       

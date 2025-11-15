@@ -22,10 +22,20 @@ Bot Telegram untuk manajemen admin dan filter dengan fitur lengkap dan performa 
 
 ### 🚀 Optimasi & Keamanan
 - ⚡ Rate limiting untuk mencegah spam
+- 🚫 Blacklist system untuk ban user
+- ⏱️ Timeout system untuk spam users
 - 🗑️ Auto-delete message untuk menjaga kebersihan chat
 - 💾 In-memory cache untuk performa tinggi
 - 🔄 Auto-recovery dari network errors
 - 📊 Health monitoring & statistics
+
+### 🤖 AI Assistant - Hoki
+- 💬 Groq LLaMA 3.3 70B integration untuk conversational AI
+- 🎯 Multi-model cascade system dengan automatic fallback
+- 😊 Personality engine dengan natural Indonesian style
+- 🛡️ Prompt injection prevention & output sanitization
+- 📊 Conversation analytics & performance monitoring
+- 🔔 Smart triggering (mention atau reply ke bot)
 
 ## 📦 Instalasi
 
@@ -69,6 +79,12 @@ npm start
 - `/removeadmin` - Hapus admin (reply ke admin yang ingin dihapus)
 - `/listadmins` - Lihat daftar semua admin
 
+#### Keamanan
+- `/blacklist` - Ban user (reply ke user yang mau di-ban)
+- `/unblacklist` - Unban user (reply ke user yang mau di-unban)
+- `/listblacklist` - Lihat daftar user yang di-blacklist
+- `/timeout <menit>` - Timeout user sementara (reply ke user, max 1440 menit)
+
 #### Manajemen Filter
 - `!add <nama>` - Buat filter baru (reply ke pesan yang ingin dijadikan filter)
 - `!del <nama>` - Hapus filter
@@ -79,6 +95,12 @@ npm start
 - `!search <keyword>` - Cari filter
 - `!status` - Lihat statistik & status bot
 - `!export` - Backup semua filter (Owner only)
+
+#### AI Assistant (Hoki)
+- `@botusername <pesan>` - Chat dengan AI Hoki
+- Reply ke pesan bot - Lanjutkan percakapan
+- `!aistats` - Lihat statistik AI (admin only)
+- `!aireset` - Reset AI stats & conversations (owner only)
 
 #### Command Umum
 - `/start` - Mulai menggunakan bot
@@ -115,6 +137,22 @@ namafilter
 ```
 !rename welcome2 hello
 ```
+
+### Chat dengan AI Hoki
+```
+@botusername Halo Hoki, apa kabar?
+```
+atau reply ke pesan bot untuk lanjutkan percakapan.
+
+### Ban User yang Spam
+1. Reply ke pesan spammer
+2. Kirim: `/blacklist`
+3. User tidak bisa gunakan bot lagi
+
+### Timeout User Sementara
+1. Reply ke pesan user
+2. Kirim: `/timeout 30` (timeout 30 menit)
+3. User tidak bisa gunakan bot selama 30 menit
 
 ## 🔧 Teknologi
 
