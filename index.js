@@ -32,6 +32,20 @@ const rateLimits = new Map();
 const RATE_LIMIT_WINDOW = 1000; // 1 second
 const MAX_REQUESTS = 5;
 
+// Periodic cleanup
+setInterval(() => {
+  // Clean up old rate limits
+  const now = Date.now();
+  for (const [userId, timestamps] of rateLimits.entries()) {
+    const validTimestamps = timestamps.filter(time => now - time < RATE_LIMIT_WINDOW);
+    if (validTimestamps.length === 0) {
+      rateLimits.delete(userId);
+    } else {
+      rateLimits.set(userId, validTimestamps);
+    }
+  }
+}, 60000); // Every minute
+
 // Initialize data asynchronously
 async function initializeData() {
   try {
@@ -182,20 +196,27 @@ bot.onText(/\/help/, async (msg) => {
       `/addadmin - Tambah admin (reply ke orangnya)\n` +
       `/removeadmin - Hapus admin (reply ke orangnya)\n` +
       `/listadmins - Lihat semua admin\n\n` +
-      `🎯 *Filter Commands:*\n` +
+      `🎯 *Filter Management:*\n` +
       `!add <nama> - Bikin filter baru (reply ke pesan)\n` +
       `!del <nama> - Hapus filter\n` +
+      `!clone <dari> <ke> - Copy filter\n` +
+      `!rename <lama> <baru> - Ganti nama filter\n\n` +
+      `🔍 *Filter Info:*\n` +
       `!list - Lihat semua filter\n` +
-      `!status - Cek status bot\n\n` +
-      `💡 *Cara Pake Filter:*\n` +
+      `!info <nama> - Detail filter\n` +
+      `!search <kata> - Cari filter\n` +
+      `!status - Status & statistik bot\n` +
+      `${isOwner(userId) ? '!export - Backup semua filter\n' : ''}` +
+      `\n💡 *Cara Pake Filter:*\n` +
       `Ketik \`!namafilter\` atau \`namafilter\`\n\n` +
       `📌 *Media Support:*\n` +
-      `Text, Photo, Video, Document, GIF, Audio, Voice, Sticker`;
+      `Text, Photo, Video, Document, GIF, Audio, Voice, Sticker\n\n` +
+      `✨ *Format Support:*\n` +
+      `Bold, Italic, Underline, Code, Link, dll`;
   } else {
     helpMsg += `💡 *Cara Pake Filter:*\n` +
       `Ketik \`!namafilter\` atau \`namafilter\`\n\n` +
-      `📌 Lu bukan admin, cuma bisa pake filter yang udah ada.\n` +
-      `Ketik !list untuk lihat daftar filter (kalo admin udah set).`;
+      `📌 Lu bukan admin, cuma bisa pake filter yang udah ada.`;
   }
 
   const reply = await bot.sendMessage(chatId, helpMsg, {
@@ -461,6 +482,229 @@ bot.onText(/^!list/, async (msg) => {
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
+// 🔍 INFO FILTER COMMAND
+bot.onText(/^!info\s+(\w+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+  const filterName = match[1].toLowerCase();
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const filter = filters[filterName];
+  if (!filter) {
+    const reply = await bot.sendMessage(chatId, `⚠️ Filter *${filterName}* gak ada cok!`, {
+      parse_mode: 'Markdown'
+    });
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  // Determine media type
+  let mediaType = '📝 Teks';
+  if (filter.photo) mediaType = '🖼️ Photo';
+  else if (filter.video) mediaType = '🎥 Video';
+  else if (filter.document) mediaType = '📄 Document';
+  else if (filter.animation) mediaType = '🎞️ GIF/Animation';
+  else if (filter.audio) mediaType = '🎵 Audio';
+  else if (filter.voice) mediaType = '🎤 Voice';
+  else if (filter.sticker) mediaType = '🎨 Sticker';
+
+  const hasText = filter.text && filter.text.length > 0;
+  const hasEntities = (filter.entities && filter.entities.length > 0) || 
+                      (filter.caption_entities && filter.caption_entities.length > 0);
+  const textLength = filter.text ? filter.text.length : 0;
+
+  const infoMsg = `ℹ️ *Info Filter: ${filterName}*\n\n` +
+    `📦 Tipe: ${mediaType}\n` +
+    `${hasText ? `📝 Teks: ${textLength} karakter\n` : ''}` +
+    `✨ Format: ${hasEntities ? 'Ada (Bold/Italic/dll)' : 'Plain text'}\n` +
+    `🔖 Trigger: \`!${filterName}\` atau \`${filterName}\``;
+
+  const reply = await bot.sendMessage(chatId, infoMsg, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+// 🔎 SEARCH FILTER COMMAND
+bot.onText(/^!search\s+(.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+  const searchTerm = match[1].toLowerCase();
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const filterNames = Object.keys(filters);
+  const results = filterNames.filter(name => name.includes(searchTerm));
+
+  if (results.length === 0) {
+    const reply = await bot.sendMessage(chatId, `🔍 Gak ada filter yang match dengan *${searchTerm}*`, {
+      parse_mode: 'Markdown'
+    });
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  const resultList = results.map((name, i) => `${i + 1}. \`!${name}\` atau \`${name}\``).join('\n');
+  const message = `🔍 *Hasil Pencarian "${searchTerm}" (${results.length} hasil):*\n\n${resultList}`;
+
+  const reply = await bot.sendMessage(chatId, message, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+// 💾 EXPORT FILTERS (Owner only)
+bot.onText(/^!export/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isOwner(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Cuma owner yang bisa export filters!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  try {
+    const exportData = {
+      exported_at: new Date().toISOString(),
+      filter_count: Object.keys(filters).length,
+      filters: filters
+    };
+
+    const exportJson = JSON.stringify(exportData, null, 2);
+    const filename = `filters_backup_${Date.now()}.json`;
+    
+    await bot.sendDocument(chatId, Buffer.from(exportJson), {
+      caption: `✅ *Backup Filters*\n\n` +
+        `📦 Total: ${Object.keys(filters).length} filters\n` +
+        `📅 Tanggal: ${new Date().toLocaleString('id-ID')}`,
+      parse_mode: 'Markdown'
+    }, {
+      filename: filename,
+      contentType: 'application/json'
+    });
+  } catch (err) {
+    console.error('Export error:', err);
+    const reply = await bot.sendMessage(chatId, '❌ Gagal export filters!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+  }
+});
+
+// 📋 CLONE FILTER
+bot.onText(/^!clone\s+(\w+)\s+(\w+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+  const sourceFilter = match[1].toLowerCase();
+  const targetFilter = match[2].toLowerCase();
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!checkRateLimit(userId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Slow down! Terlalu banyak request!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!filters[sourceFilter]) {
+    const reply = await bot.sendMessage(chatId, `⚠️ Filter *${sourceFilter}* gak ada cok!`, {
+      parse_mode: 'Markdown'
+    });
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (filters[targetFilter]) {
+    const reply = await bot.sendMessage(chatId, `⚠️ Filter *${targetFilter}* udah ada! Hapus dulu atau pake nama lain.`, {
+      parse_mode: 'Markdown'
+    });
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  // Deep copy filter
+  filters[targetFilter] = JSON.parse(JSON.stringify(filters[sourceFilter]));
+  await saveJSON(FILTERS_FILE, filters);
+
+  const reply = await bot.sendMessage(chatId, `✅ Filter *${sourceFilter}* berhasil di-clone ke *${targetFilter}*! 🎉`, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+// ✏️ RENAME FILTER
+bot.onText(/^!rename\s+(\w+)\s+(\w+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+  const oldName = match[1].toLowerCase();
+  const newName = match[2].toLowerCase();
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  if (!isAdmin(userId)) {
+    const reply = await bot.sendMessage(chatId, '❌ Lu bukan admin anjir!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!checkRateLimit(userId)) {
+    const reply = await bot.sendMessage(chatId, '⚠️ Slow down! Terlalu banyak request!');
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (!filters[oldName]) {
+    const reply = await bot.sendMessage(chatId, `⚠️ Filter *${oldName}* gak ada cok!`, {
+      parse_mode: 'Markdown'
+    });
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  if (filters[newName]) {
+    const reply = await bot.sendMessage(chatId, `⚠️ Filter *${newName}* udah ada! Pake nama lain.`, {
+      parse_mode: 'Markdown'
+    });
+    autoDeleteMessage(chatId, reply.message_id, 3);
+    return;
+  }
+
+  // Rename
+  filters[newName] = filters[oldName];
+  delete filters[oldName];
+  await saveJSON(FILTERS_FILE, filters);
+
+  const reply = await bot.sendMessage(chatId, `✅ Filter *${oldName}* berhasil di-rename jadi *${newName}*! ✨`, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const messageId = query.message.message_id;
@@ -515,47 +759,55 @@ bot.on('message', async (msg) => {
   if (!filter) return;
 
   try {
-    // Jangan gunakan parse_mode jika ada entities, karena akan konflik
+    // Setup options: gunakan entities jika ada, fallback ke parse_mode untuk Markdown manual
     const textOptions = {};
     if (filter.entities && filter.entities.length > 0) {
       textOptions.entities = filter.entities;
+    } else if (filter.text) {
+      // Fallback: parse Markdown syntax jika tidak ada entities
+      textOptions.parse_mode = 'Markdown';
     }
 
     const captionOptions = {};
+    // PENTING: Prioritas caption_entities > entities > parse_mode
     if (filter.caption_entities && filter.caption_entities.length > 0) {
       captionOptions.caption_entities = filter.caption_entities;
     } else if (filter.entities && filter.entities.length > 0) {
+      // Gunakan entities untuk caption jika tidak ada caption_entities khusus
       captionOptions.caption_entities = filter.entities;
+    } else if (filter.text) {
+      // Fallback: parse Markdown syntax di caption jika tidak ada entities sama sekali
+      captionOptions.parse_mode = 'Markdown';
     }
 
     if (filter.photo) {
       await bot.sendPhoto(chatId, filter.photo, {
-        caption: filter.text,
+        caption: filter.text || undefined,
         ...captionOptions
       });
     } else if (filter.video) {
       await bot.sendVideo(chatId, filter.video, {
-        caption: filter.text,
+        caption: filter.text || undefined,
         ...captionOptions
       });
     } else if (filter.animation) {
       await bot.sendAnimation(chatId, filter.animation, {
-        caption: filter.text,
+        caption: filter.text || undefined,
         ...captionOptions
       });
     } else if (filter.document) {
       await bot.sendDocument(chatId, filter.document, {
-        caption: filter.text,
+        caption: filter.text || undefined,
         ...captionOptions
       });
     } else if (filter.audio) {
       await bot.sendAudio(chatId, filter.audio, {
-        caption: filter.text,
+        caption: filter.text || undefined,
         ...captionOptions
       });
     } else if (filter.voice) {
       await bot.sendVoice(chatId, filter.voice, {
-        caption: filter.text,
+        caption: filter.text || undefined,
         ...captionOptions
       });
     } else if (filter.sticker) {
@@ -584,10 +836,50 @@ bot.onText(/^!status/, async (msg) => {
     return;
   }
 
+  // Filter statistics
+  const filterStats = {
+    text: 0,
+    photo: 0,
+    video: 0,
+    document: 0,
+    animation: 0,
+    audio: 0,
+    voice: 0,
+    sticker: 0
+  };
+
+  Object.values(filters).forEach(filter => {
+    if (filter.photo) filterStats.photo++;
+    else if (filter.video) filterStats.video++;
+    else if (filter.document) filterStats.document++;
+    else if (filter.animation) filterStats.animation++;
+    else if (filter.audio) filterStats.audio++;
+    else if (filter.voice) filterStats.voice++;
+    else if (filter.sticker) filterStats.sticker++;
+    else if (filter.text) filterStats.text++;
+  });
+
+  const memUsage = process.memoryUsage();
+  const memMB = (memUsage.heapUsed / 1024 / 1024).toFixed(2);
+  const uptime = process.uptime();
+  const uptimeHours = Math.floor(uptime / 3600);
+  const uptimeMinutes = Math.floor((uptime % 3600) / 60);
+
   const status = `📊 *Status Bot*\n\n` +
     `👑 Total Admin: *${admins.length}*\n` +
     `🎯 Total Filter: *${Object.keys(filters).length}*\n` +
     `⚡ Active Timers: *${deleteTimers.size}*\n` +
+    `💾 Memory: *${memMB} MB*\n` +
+    `⏱️ Uptime: *${uptimeHours}h ${uptimeMinutes}m*\n\n` +
+    `📦 *Filter Breakdown:*\n` +
+    `📝 Text: ${filterStats.text}\n` +
+    `🖼️ Photo: ${filterStats.photo}\n` +
+    `🎥 Video: ${filterStats.video}\n` +
+    `📄 Document: ${filterStats.document}\n` +
+    `🎞️ GIF: ${filterStats.animation}\n` +
+    `🎵 Audio: ${filterStats.audio}\n` +
+    `🎤 Voice: ${filterStats.voice}\n` +
+    `🎨 Sticker: ${filterStats.sticker}\n\n` +
     `✅ Status: *Online* 🚀`;
 
   const reply = await bot.sendMessage(chatId, status, { parse_mode: 'Markdown' });
