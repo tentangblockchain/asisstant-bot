@@ -210,7 +210,9 @@ bot.onText(/\/help/, async (msg) => {
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
-
+bot.onText(/\/addadmin(?:@\w+)?/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
   const messageId = msg.message_id;
 
   autoDeleteMessage(chatId, messageId, 3);
