@@ -101,6 +101,11 @@ let aiStats = {
     modelUsage: {}
 };
 
+// AI rate limiting per user (prevent API abuse)
+const aiRateLimits = new Map(); // userId -> last request timestamp
+const AI_COOLDOWN_MS = 3000; // 3 seconds between AI requests per user
+const MAX_CONVERSATION_LENGTH = 10; // Max messages in conversation history
+
 // Rate limiting
 const rateLimits = new Map();
 const RATE_LIMIT_WINDOW = 1000; // 1 second
@@ -118,7 +123,27 @@ setInterval(() => {
       rateLimits.set(userId, validTimestamps);
     }
   }
+  
+  // Clean up stale AI conversations (older than 1 hour)
+  for (const [userId, history] of aiConversations.entries()) {
+    if (history.length > MAX_CONVERSATION_LENGTH * 2) {
+      aiConversations.delete(userId);
+      console.log(`🧹 Cleaned up long conversation for user ${userId}`);
+    }
+  }
 }, 60000); // Every minute
+
+// Reset model usage counters every hour (Groq limit resets hourly)
+setInterval(() => {
+  AI_MODELS.forEach(m => {
+    const previousUsed = m.used;
+    m.used = 0;
+    if (previousUsed > 0) {
+      console.log(`🔄 Reset ${m.name}: ${previousUsed} -> 0`);
+    }
+  });
+  console.log('✅ AI model counters reset (hourly)');
+}, 3600000); // Every hour
 
 // Initialize data asynchronously
 async function initializeData() {
@@ -332,9 +357,9 @@ async function callGroqAPI(userMessage, userId) {
     throw new Error('Semua model AI lagi penuh nih~ Coba lagi nanti yaa 🙏');
   }
   
-  // Get conversation history (last 5 messages max)
+  // Get conversation history (limit to MAX_CONVERSATION_LENGTH)
   const history = aiConversations.get(userId) || [];
-  const recentHistory = history.slice(-5);
+  const recentHistory = history.slice(-Math.min(5, MAX_CONVERSATION_LENGTH));
   
   // Build messages with personality
   const messages = [
@@ -400,10 +425,13 @@ Jawab pakai bahasa Indonesia yang natural dan helpful!`
     // Update model usage
     model.used++;
     
-    // Save conversation history
+    // Save conversation history (limit to MAX_CONVERSATION_LENGTH pairs)
     history.push({ role: 'user', content: sanitizedMessage });
     history.push({ role: 'assistant', content: aiResponse });
-    aiConversations.set(userId, history);
+    
+    // Keep only recent conversation (prevent memory bloat)
+    const trimmedHistory = history.slice(-MAX_CONVERSATION_LENGTH * 2);
+    aiConversations.set(userId, trimmedHistory);
     
     // Update stats
     aiStats.totalRequests++;
@@ -912,6 +940,12 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     filterData.caption_entities = replyMsg.caption_entities;
   }
 
+  // 💬 FITUR BARU: Simpan inline keyboard/buttons jika ada
+  if (replyMsg.reply_markup && replyMsg.reply_markup.inline_keyboard) {
+    filterData.buttons = replyMsg.reply_markup.inline_keyboard;
+    console.log(`✅ Filter ${filterName} menyimpan ${replyMsg.reply_markup.inline_keyboard.length} baris button`);
+  }
+
   filters[filterName] = filterData;
   const saved = await saveJSON(FILTERS_FILE, filters);
 
@@ -1075,26 +1109,46 @@ bot.on('message', async (msg) => {
   let userMessage = msg.text.replace(`@${botInfo.username}`, '').trim();
   if (!userMessage || userMessage.length < 2) return;
   
-  // Rate limit check (more lenient for AI)
-  if (!checkRateLimit(userId)) {
-    const reply = await bot.sendMessage(chatId, '⚠️ Slow down sih~ Tunggu bentar yaa 😅');
+  // AI-specific rate limiting (cooldown per user)
+  const lastAIRequest = aiRateLimits.get(userId) || 0;
+  const timeSinceLastRequest = Date.now() - lastAIRequest;
+  
+  if (timeSinceLastRequest < AI_COOLDOWN_MS) {
+    const remainingSeconds = Math.ceil((AI_COOLDOWN_MS - timeSinceLastRequest) / 1000);
+    const reply = await bot.sendMessage(chatId, `⏱️ Tunggu ${remainingSeconds} detik lagi yaa~ 😊`);
     autoDeleteMessage(chatId, reply.message_id, 3);
     return;
   }
   
+  // Update AI rate limit timestamp
+  aiRateLimits.set(userId, Date.now());
+  
   try {
-    // Send typing indicator
-    await bot.sendChatAction(chatId, 'typing');
+    // Show typing indicator repeatedly while processing (Telegram typing lasts 5 seconds)
+    const typingInterval = setInterval(() => {
+      bot.sendChatAction(chatId, 'typing').catch(() => {});
+    }, 4000);
     
-    // Call AI
-    const { response, model } = await callGroqAPI(userMessage, userId);
-    
-    // Send response
-    const reply = await bot.sendMessage(chatId, response, {
-      reply_to_message_id: msg.message_id
-    });
-    
-    console.log(`🤖 Hoki responded using ${model}`);
+    try {
+      // Initial typing indicator
+      await bot.sendChatAction(chatId, 'typing');
+      
+      // Call AI
+      const { response, model } = await callGroqAPI(userMessage, userId);
+      
+      // Stop typing indicator
+      clearInterval(typingInterval);
+      
+      // Send response
+      const reply = await bot.sendMessage(chatId, response, {
+        reply_to_message_id: msg.message_id
+      });
+      
+      console.log(`🤖 Hoki responded using ${model}`);
+    } finally {
+      // Always clear the typing interval
+      clearInterval(typingInterval);
+    }
     
   } catch (err) {
     console.error('❌ AI Error:', err.message);
@@ -1230,6 +1284,9 @@ bot.onText(/^!export/, async (msg) => {
   }
 
   try {
+    // Show typing while preparing export
+    await bot.sendChatAction(chatId, 'upload_document');
+    
     const exportData = {
       exported_at: new Date().toISOString(),
       filter_count: Object.keys(filters).length,
@@ -1603,6 +1660,9 @@ bot.onText(/^!status/, async (msg) => {
     autoDeleteMessage(chatId, reply.message_id, 3);
     return;
   }
+
+  // Show typing while calculating stats
+  await bot.sendChatAction(chatId, 'typing');
 
   // Filter statistics
   const filterStats = {
