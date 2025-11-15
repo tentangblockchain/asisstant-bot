@@ -80,7 +80,17 @@ async function loadJSON(file, defaultValue) {
 
 async function saveJSON(file, data) {
   try {
-    await fs.writeFile(file, JSON.stringify(data, null, 2));
+    // SAFETY: Reload file sebelum save untuk detect concurrent modifications
+    // Ini mencegah data loss jika 2 admin edit bersamaan
+    if (file === FILTERS_FILE && fsSync.existsSync(file)) {
+      const currentData = await loadJSON(file, {});
+      // Merge dengan data terbaru untuk avoid overwrite
+      // Data yang baru di-pass akan override yang lama (intended behavior)
+      const mergedData = { ...currentData, ...data };
+      await fs.writeFile(file, JSON.stringify(mergedData, null, 2));
+    } else {
+      await fs.writeFile(file, JSON.stringify(data, null, 2));
+    }
     return true;
   } catch (err) {
     console.error(`Error saving ${file}:`, err);
@@ -418,10 +428,14 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     created_by: userId
   };
 
-  // Simpan entities hanya jika benar-benar ada
+  // CRITICAL FIX: Simpan entities DAN caption_entities secara TERPISAH (bukan else-if!)
+  // Untuk text messages: gunakan entities
+  // Untuk media dengan caption: gunakan caption_entities
+  // Beberapa cases bisa punya keduanya, jadi simpan keduanya jika ada
   if (replyMsg.entities && replyMsg.entities.length > 0) {
     filterData.entities = replyMsg.entities;
-  } else if (replyMsg.caption_entities && replyMsg.caption_entities.length > 0) {
+  }
+  if (replyMsg.caption_entities && replyMsg.caption_entities.length > 0) {
     filterData.caption_entities = replyMsg.caption_entities;
   }
 
@@ -804,18 +818,19 @@ bot.on('message', async (msg) => {
     }
 
     const captionOptions = {};
-    // CRITICAL: JANGAN PERNAH campur entities dengan parse_mode!
-    // parse_mode akan rewrite text dan merusak offset entities
-    if (filter.text) {
-      // Ada text/caption
+    // CRITICAL FIX: Prioritize caption_entities untuk media dengan caption
+    // JANGAN PERNAH campur entities dengan parse_mode - akan merusak offset!
+    if (filter.text && filter.text.trim().length > 0) {
+      // Ada text/caption yang tidak kosong
       if (filter.caption_entities && filter.caption_entities.length > 0) {
-        // Ada caption_entities -> HANYA gunakan caption_entities, NO parse_mode
+        // PRIORITY 1: Ada caption_entities -> gunakan ini untuk media caption
         captionOptions.caption_entities = filter.caption_entities;
       } else if (filter.entities && filter.entities.length > 0) {
-        // Tidak ada caption_entities tapi ada entities -> gunakan entities untuk caption
+        // PRIORITY 2: Fallback ke entities jika caption_entities tidak ada
+        // (untuk backward compatibility dengan filter lama)
         captionOptions.caption_entities = filter.entities;
       } else {
-        // HANYA gunakan parse_mode jika TIDAK ADA entities/caption_entities
+        // PRIORITY 3: Plain text - gunakan parse_mode sebagai fallback
         captionOptions.parse_mode = 'Markdown';
       }
     }
@@ -876,11 +891,23 @@ bot.on('message', async (msg) => {
       console.error('API Response:', JSON.stringify(err.response.body, null, 2));
     }
     
-    // Kirim notification ke admin jika error
+    // IMPROVED: Kirim notification ke admin yang trigger, dan juga ke owner untuk critical errors
     if (isAdmin(msg.from.id)) {
       bot.sendMessage(chatId, `⚠️ Error sending filter *${filterName}*:\n\`${err.message}\``, {
         parse_mode: 'Markdown'
       }).catch(() => {});
+    }
+    
+    // Notify owner untuk critical errors (kecuali owner yang trigger sendiri)
+    if (msg.from.id !== OWNER_ID && (err.code === 'EFATAL' || err.message.includes('parse'))) {
+      bot.sendMessage(OWNER_ID, 
+        `🚨 *Critical Filter Error*\n\n` +
+        `Filter: \`${filterName}\`\n` +
+        `Chat: ${chatId}\n` +
+        `User: ${msg.from.id}\n` +
+        `Error: \`${err.message}\``, 
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
     }
   }
 });
