@@ -759,28 +759,38 @@ bot.on('message', async (msg) => {
   if (!filter) return;
 
   try {
-    // Setup options: gunakan entities jika ada, fallback ke parse_mode untuk Markdown manual
+    // CRITICAL: entities dan parse_mode TIDAK BISA digunakan bersamaan di Telegram API!
+    // Jika ada entities -> gunakan entities saja, JANGAN tambahkan parse_mode
+    // Jika tidak ada entities -> gunakan parse_mode untuk fallback Markdown
+    
     const textOptions = {};
     if (filter.entities && filter.entities.length > 0) {
+      // Ada entities -> gunakan entities ONLY, NO parse_mode
       textOptions.entities = filter.entities;
     } else if (filter.text) {
-      // Fallback: parse Markdown syntax jika tidak ada entities
+      // HANYA gunakan parse_mode jika TIDAK ADA entities sama sekali
       textOptions.parse_mode = 'Markdown';
     }
 
     const captionOptions = {};
-    // PENTING: Prioritas caption_entities > entities > parse_mode
+    // CRITICAL: JANGAN PERNAH campur entities dengan parse_mode!
+    // parse_mode akan rewrite text dan merusak offset entities
     if (filter.caption_entities && filter.caption_entities.length > 0) {
+      // Ada caption_entities -> HANYA gunakan caption_entities, NO parse_mode
       captionOptions.caption_entities = filter.caption_entities;
+      // STOP disini, jangan tambahkan parse_mode
     } else if (filter.entities && filter.entities.length > 0) {
-      // Gunakan entities untuk caption jika tidak ada caption_entities khusus
+      // Tidak ada caption_entities tapi ada entities -> gunakan entities untuk caption
       captionOptions.caption_entities = filter.entities;
+      // STOP disini, jangan tambahkan parse_mode
     } else if (filter.text) {
-      // Fallback: parse Markdown syntax di caption jika tidak ada entities sama sekali
+      // HANYA gunakan parse_mode jika TIDAK ADA entities/caption_entities
       captionOptions.parse_mode = 'Markdown';
     }
 
     if (filter.photo) {
+      // Debug logging
+      console.log(`[Filter: ${filterName}] Sending photo with caption options:`, captionOptions);
       await bot.sendPhoto(chatId, filter.photo, {
         caption: filter.text || undefined,
         ...captionOptions
@@ -820,6 +830,9 @@ bot.on('message', async (msg) => {
     }
   } catch (err) {
     console.error('Filter send error:', err);
+    // Log detail error untuk debugging
+    console.error('Filter name:', filterName);
+    console.error('Filter data:', JSON.stringify(filter, null, 2));
   }
 });
 
