@@ -6,15 +6,27 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 
-// Initialize bot with optimized settings
+// Validate environment variables
+if (!process.env.BOT_TOKEN) {
+  console.error('❌ BOT_TOKEN tidak ditemukan di .env file!');
+  process.exit(1);
+}
+
+if (!process.env.OWNER_ID) {
+  console.error('❌ OWNER_ID tidak ditemukan di .env file!');
+  process.exit(1);
+}
+
+// Initialize bot with optimized settings and better error handling
 const bot = new TelegramBot(process.env.BOT_TOKEN, { 
   polling: {
-    interval: 300,
-    autoStart: true,
+    interval: 1000,
+    autoStart: false, // We'll start manually after validation
     params: {
-      timeout: 10
+      timeout: 30
     }
-  }
+  },
+  filepath: false // Disable file downloads to prevent issues
 });
 
 const OWNER_ID = parseInt(process.env.OWNER_ID);
@@ -1137,17 +1149,49 @@ bot.onText(/^!status/, async (msg) => {
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
-// Enhanced error handling
-bot.on('polling_error', (error) => {
-  console.error('⚠️ Polling error:', error.code, error.message);
+// Enhanced error handling with exponential backoff
+let pollingErrorCount = 0;
+let lastErrorTime = 0;
+const MAX_RETRY_ATTEMPTS = 5;
 
-  // Auto-recovery untuk network errors
-  if (error.code === 'EFATAL' || error.code === 'ETELEGRAM') {
-    console.log('🔄 Attempting to recover...');
-    setTimeout(() => {
-      bot.startPolling({ restart: true });
-    }, 5000);
+bot.on('polling_error', (error) => {
+  const now = Date.now();
+  
+  console.error('⚠️ Polling error:', error.code, error.message);
+  
+  // Reset counter if last error was more than 1 minute ago
+  if (now - lastErrorTime > 60000) {
+    pollingErrorCount = 0;
   }
+  
+  lastErrorTime = now;
+  pollingErrorCount++;
+  
+  // Stop retrying after max attempts
+  if (pollingErrorCount >= MAX_RETRY_ATTEMPTS) {
+    console.error('❌ Max retry attempts reached. Possible issues:');
+    console.error('   1. BOT_TOKEN tidak valid');
+    console.error('   2. Network/firewall memblokir Telegram API');
+    console.error('   3. Bot instance lain menggunakan token yang sama');
+    console.error('\n💡 Solusi:');
+    console.error('   - Cek BOT_TOKEN di .env');
+    console.error('   - Stop bot instance lain yang menggunakan token ini');
+    console.error('   - Pastikan koneksi internet stabil');
+    process.exit(1);
+  }
+  
+  // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+  const backoffDelay = Math.min(2000 * Math.pow(2, pollingErrorCount - 1), 32000);
+  
+  console.log(`🔄 Retry attempt ${pollingErrorCount}/${MAX_RETRY_ATTEMPTS} in ${backoffDelay/1000}s...`);
+  
+  setTimeout(() => {
+    bot.stopPolling().then(() => {
+      bot.startPolling({ restart: true });
+    }).catch(err => {
+      console.error('Failed to restart polling:', err.message);
+    });
+  }, backoffDelay);
 });
 
 // Graceful shutdown
@@ -1187,10 +1231,35 @@ bot.onText(/^!health/, async (msg) => {
   });
 });
 
+// Validate bot token before starting
+async function validateBotToken() {
+  try {
+    console.log('🔍 Validating bot token...');
+    const me = await bot.getMe();
+    console.log(`✅ Bot token valid! Connected as: @${me.username}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Bot token validation failed:', err.message);
+    console.error('\n💡 Pastikan BOT_TOKEN di .env file benar!');
+    console.error('   Dapatkan token baru dari @BotFather di Telegram');
+    return false;
+  }
+}
+
 // Initialize and start
-initializeData().then(() => {
-  console.log('🤖 Bot started anjir! 🚀');
+initializeData().then(async () => {
+  console.log('📦 Data initialized');
   console.log(`📊 Loaded ${admins.length} admins and ${Object.keys(filters).length} filters`);
+  
+  // Validate token before starting polling
+  const isValid = await validateBotToken();
+  if (!isValid) {
+    process.exit(1);
+  }
+  
+  // Start polling only after validation
+  await bot.startPolling();
+  console.log('🤖 Bot started successfully! 🚀');
 }).catch(err => {
   console.error('❌ Failed to initialize:', err);
   process.exit(1);
