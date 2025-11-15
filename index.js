@@ -80,17 +80,10 @@ async function loadJSON(file, defaultValue) {
 
 async function saveJSON(file, data) {
   try {
-    // SAFETY: Reload file sebelum save untuk detect concurrent modifications
-    // Ini mencegah data loss jika 2 admin edit bersamaan
-    if (file === FILTERS_FILE && fsSync.existsSync(file)) {
-      const currentData = await loadJSON(file, {});
-      // Merge dengan data terbaru untuk avoid overwrite
-      // Data yang baru di-pass akan override yang lama (intended behavior)
-      const mergedData = { ...currentData, ...data };
-      await fs.writeFile(file, JSON.stringify(mergedData, null, 2));
-    } else {
-      await fs.writeFile(file, JSON.stringify(data, null, 2));
-    }
+    // IMPORTANT: Just write the data directly
+    // The in-memory object (filters, admins) is already the source of truth
+    // Merging with file would bring back deleted items - that's a bug!
+    await fs.writeFile(file, JSON.stringify(data, null, 2));
     return true;
   } catch (err) {
     console.error(`Error saving ${file}:`, err);
@@ -104,49 +97,90 @@ async function saveJSON(file, data) {
 function entitiesToHTML(text, entities) {
   if (!entities || entities.length === 0) return text;
   
-  // Helper to escape HTML special chars in text content
-  function escapeHTML(str) {
-    return str.replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;');
-  }
+  // Build array of text segments with their formatting
+  const segments = [];
+  let lastOffset = 0;
   
-  // Sort entities by offset (descending) to process from end to start
-  // This prevents offset shifting when inserting HTML tags
-  const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
-  
-  let result = text;
+  // Sort entities by offset (ascending)
+  const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
   
   for (const entity of sortedEntities) {
     const { offset, length, type, url } = entity;
+    
+    // Add plain text before this entity
+    if (offset > lastOffset) {
+      segments.push({
+        text: text.substring(lastOffset, offset),
+        type: 'plain'
+      });
+    }
+    
+    // Add formatted entity
     const content = text.substring(offset, offset + length);
-    const escapedContent = escapeHTML(content); // Escape HTML in content
-    let replacement;
+    segments.push({
+      text: content,
+      type: type,
+      url: url,
+      user: entity.user
+    });
+    
+    lastOffset = offset + length;
+  }
+  
+  // Add remaining plain text
+  if (lastOffset < text.length) {
+    segments.push({
+      text: text.substring(lastOffset),
+      type: 'plain'
+    });
+  }
+  
+  // Helper to escape HTML special characters
+  function escapeHTML(str) {
+    return str.replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;');
+  }
+  
+  // Convert segments to HTML
+  let result = '';
+  for (const segment of segments) {
+    const { text: segText, type, url, user } = segment;
+    
+    // Escape HTML in content for security
+    const escapedText = escapeHTML(segText);
     
     switch (type) {
+      case 'plain':
+        result += escapedText;
+        break;
       case 'bold':
-        replacement = `<b>${escapedContent}</b>`;
+        result += `<b>${escapedText}</b>`;
         break;
       case 'italic':
-        replacement = `<i>${escapedContent}</i>`;
+        result += `<i>${escapedText}</i>`;
         break;
       case 'underline':
-        replacement = `<u>${escapedContent}</u>`;
+        result += `<u>${escapedText}</u>`;
         break;
       case 'strikethrough':
-        replacement = `<s>${escapedContent}</s>`;
+        result += `<s>${escapedText}</s>`;
         break;
       case 'code':
-        replacement = `<code>${escapedContent}</code>`;
+        result += `<code>${escapedText}</code>`;
         break;
       case 'pre':
-        replacement = `<pre>${escapedContent}</pre>`;
+        result += `<pre>${escapedText}</pre>`;
         break;
       case 'text_link':
-        replacement = `<a href="${escapeHTML(url)}">${escapedContent}</a>`;
+        result += `<a href="${escapeHTML(url)}">${escapedText}</a>`;
         break;
       case 'text_mention':
-        replacement = `<a href="tg://user?id=${entity.user.id}">${escapedContent}</a>`;
+        result += `<a href="tg://user?id=${user.id}">${escapedText}</a>`;
+        break;
+      case 'spoiler':
+        result += `<tg-spoiler>${escapedText}</tg-spoiler>`;
         break;
       case 'url':
       case 'mention':
@@ -155,21 +189,13 @@ function entitiesToHTML(text, entities) {
       case 'bot_command':
       case 'email':
       case 'phone_number':
-        // These don't need HTML tags, they're auto-detected by Telegram
-        replacement = escapedContent;
-        break;
-      case 'spoiler':
-        replacement = `<tg-spoiler>${escapedContent}</tg-spoiler>`;
-        break;
       default:
-        replacement = escapedContent;
+        // Auto-detected by Telegram, no special formatting needed
+        result += escapedText;
+        break;
     }
-    
-    result = result.substring(0, offset) + replacement + result.substring(offset + length);
   }
   
-  // Escape remaining text parts that don't have entities
-  // This is already handled above, no need for extra escaping
   return result;
 }
 
@@ -896,10 +922,9 @@ bot.on('message', async (msg) => {
       formattedText = entitiesToHTML(filter.text, filter.entities);
       textParseMode = 'HTML';
       console.log('✅ Converted text entities to HTML');
-    } else if (filter.text) {
-      // Plain text - gunakan Markdown sebagai fallback
-      textParseMode = 'Markdown';
     }
+    // NO FALLBACK to Markdown for plain text - send as-is without parse_mode
+    // Markdown fallback would break text with special chars like _, *, [, etc
 
     // CRITICAL FIX: Convert entities to HTML since caption_entities doesn't work in node-telegram-bot-api
     let formattedCaption = filter.text;
