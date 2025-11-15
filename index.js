@@ -803,6 +803,10 @@ bot.on('message', async (msg) => {
   const filter = filters[filterName];
   if (!filter) return;
 
+  // DEBUG: Log filter trigger
+  console.log(`🔍 Filter triggered: "${filterName}"`);
+  console.log('Filter data:', JSON.stringify(filter, null, 2));
+
   try {
     // CRITICAL: entities dan parse_mode TIDAK BISA digunakan bersamaan di Telegram API!
     // Jika ada entities -> gunakan entities saja, JANGAN tambahkan parse_mode
@@ -825,15 +829,20 @@ bot.on('message', async (msg) => {
       if (filter.caption_entities && filter.caption_entities.length > 0) {
         // PRIORITY 1: Ada caption_entities -> gunakan ini untuk media caption
         captionOptions.caption_entities = filter.caption_entities;
+        console.log('✅ Using caption_entities:', JSON.stringify(captionOptions.caption_entities, null, 2));
       } else if (filter.entities && filter.entities.length > 0) {
         // PRIORITY 2: Fallback ke entities jika caption_entities tidak ada
         // (untuk backward compatibility dengan filter lama)
         captionOptions.caption_entities = filter.entities;
+        console.log('⚠️ Fallback to entities for caption:', JSON.stringify(captionOptions.caption_entities, null, 2));
       } else {
         // PRIORITY 3: Plain text - gunakan parse_mode sebagai fallback
         captionOptions.parse_mode = 'Markdown';
+        console.log('ℹ️ Using parse_mode Markdown (no entities)');
       }
     }
+    
+    console.log('📦 Final captionOptions:', JSON.stringify(captionOptions, null, 2));
 
     if (filter.photo) {
       const photoOptions = {};
@@ -846,33 +855,47 @@ bot.on('message', async (msg) => {
           photoOptions.parse_mode = captionOptions.parse_mode;
         }
       }
-
+      
+      // DEBUG logging
+      console.log('📸 Sending photo with options:', JSON.stringify(photoOptions, null, 2));
       await bot.sendPhoto(chatId, filter.photo, photoOptions);
     } else if (filter.video) {
-      await bot.sendVideo(chatId, filter.video, {
+      const videoOptions = {
         caption: filter.text || undefined,
         ...captionOptions
-      });
+      };
+      
+      // DEBUG logging
+      console.log('🎥 Sending video with options:', JSON.stringify(videoOptions, null, 2));
+      await bot.sendVideo(chatId, filter.video, videoOptions);
     } else if (filter.animation) {
-      await bot.sendAnimation(chatId, filter.animation, {
+      const animOptions = {
         caption: filter.text || undefined,
         ...captionOptions
-      });
+      };
+      console.log('🎞️ Sending animation with options:', JSON.stringify(animOptions, null, 2));
+      await bot.sendAnimation(chatId, filter.animation, animOptions);
     } else if (filter.document) {
-      await bot.sendDocument(chatId, filter.document, {
+      const docOptions = {
         caption: filter.text || undefined,
         ...captionOptions
-      });
+      };
+      console.log('📄 Sending document with options:', JSON.stringify(docOptions, null, 2));
+      await bot.sendDocument(chatId, filter.document, docOptions);
     } else if (filter.audio) {
-      await bot.sendAudio(chatId, filter.audio, {
+      const audioOptions = {
         caption: filter.text || undefined,
         ...captionOptions
-      });
+      };
+      console.log('🎵 Sending audio with options:', JSON.stringify(audioOptions, null, 2));
+      await bot.sendAudio(chatId, filter.audio, audioOptions);
     } else if (filter.voice) {
-      await bot.sendVoice(chatId, filter.voice, {
+      const voiceOptions = {
         caption: filter.text || undefined,
         ...captionOptions
-      });
+      };
+      console.log('🎤 Sending voice with options:', JSON.stringify(voiceOptions, null, 2));
+      await bot.sendVoice(chatId, filter.voice, voiceOptions);
     } else if (filter.sticker) {
       await bot.sendSticker(chatId, filter.sticker);
       if (filter.text) {
