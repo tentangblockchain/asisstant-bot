@@ -2,6 +2,7 @@
 node_modules/
 npm-debug.log
 yarn-error.log
+package-lock.json
 
 # Environment variables
 .env
@@ -20,9 +21,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Replit
 attached_assets/
-node_modules/
-admin.json
-filters.json
-replit.md
-.replit
