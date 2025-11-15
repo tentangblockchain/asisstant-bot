@@ -31,7 +31,8 @@ const bot = new TelegramBot(process.env.BOT_TOKEN, {
     agentOptions: {
       keepAlive: true,
       keepAliveMsecs: 30000,
-      timeout: 120000 // 2 minutes timeout
+      timeout: 120000, // 2 minutes timeout
+      family: 4 // Force IPv4 only (0=both, 4=IPv4, 6=IPv6)
     },
     forever: true,
     timeout: 120000 // 2 minutes request timeout
