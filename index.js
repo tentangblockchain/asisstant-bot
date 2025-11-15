@@ -148,12 +148,6 @@ function createPaginationKeyboard(currentPage, totalPages, prefix) {
   return { inline_keyboard: keyboard };
 }
 
-// 👑 ADMIN COMMANDS
-bot.onText(/\/addadmin(?:@\w+)?/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-
-
 // 📖 HELP & START COMMANDS
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
