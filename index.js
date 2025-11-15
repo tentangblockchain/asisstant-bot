@@ -304,9 +304,10 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
   }
 
   const replyMsg = msg.reply_to_message;
+  
+  // Simpan entities HANYA jika ada, dan dalam format yang benar
   const filterData = {
     text: replyMsg.text || replyMsg.caption || '',
-    entities: replyMsg.entities || replyMsg.caption_entities || [],
     photo: replyMsg.photo ? replyMsg.photo[replyMsg.photo.length - 1].file_id : null,
     video: replyMsg.video ? replyMsg.video.file_id : null,
     document: replyMsg.document ? replyMsg.document.file_id : null,
@@ -315,6 +316,13 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
     voice: replyMsg.voice ? replyMsg.voice.file_id : null,
     sticker: replyMsg.sticker ? replyMsg.sticker.file_id : null
   };
+
+  // Simpan entities hanya jika benar-benar ada
+  if (replyMsg.entities && replyMsg.entities.length > 0) {
+    filterData.entities = replyMsg.entities;
+  } else if (replyMsg.caption_entities && replyMsg.caption_entities.length > 0) {
+    filterData.caption_entities = replyMsg.caption_entities;
+  }
 
   filters[filterName] = filterData;
   await saveJSON(FILTERS_FILE, filters);
@@ -452,48 +460,56 @@ bot.on('message', async (msg) => {
   if (!filter) return;
 
   try {
-    const options = {
-      parse_mode: 'Markdown',
-      entities: filter.entities
-    };
+    // Jangan gunakan parse_mode jika ada entities, karena akan konflik
+    const textOptions = {};
+    if (filter.entities && filter.entities.length > 0) {
+      textOptions.entities = filter.entities;
+    }
+
+    const captionOptions = {};
+    if (filter.caption_entities && filter.caption_entities.length > 0) {
+      captionOptions.caption_entities = filter.caption_entities;
+    } else if (filter.entities && filter.entities.length > 0) {
+      captionOptions.caption_entities = filter.entities;
+    }
 
     if (filter.photo) {
       await bot.sendPhoto(chatId, filter.photo, {
         caption: filter.text,
-        caption_entities: filter.entities
+        ...captionOptions
       });
     } else if (filter.video) {
       await bot.sendVideo(chatId, filter.video, {
         caption: filter.text,
-        caption_entities: filter.entities
+        ...captionOptions
       });
     } else if (filter.animation) {
       await bot.sendAnimation(chatId, filter.animation, {
         caption: filter.text,
-        caption_entities: filter.entities
+        ...captionOptions
       });
     } else if (filter.document) {
       await bot.sendDocument(chatId, filter.document, {
         caption: filter.text,
-        caption_entities: filter.entities
+        ...captionOptions
       });
     } else if (filter.audio) {
       await bot.sendAudio(chatId, filter.audio, {
         caption: filter.text,
-        caption_entities: filter.entities
+        ...captionOptions
       });
     } else if (filter.voice) {
       await bot.sendVoice(chatId, filter.voice, {
         caption: filter.text,
-        caption_entities: filter.entities
+        ...captionOptions
       });
     } else if (filter.sticker) {
       await bot.sendSticker(chatId, filter.sticker);
       if (filter.text) {
-        await bot.sendMessage(chatId, filter.text, options);
+        await bot.sendMessage(chatId, filter.text, textOptions);
       }
     } else if (filter.text) {
-      await bot.sendMessage(chatId, filter.text, options);
+      await bot.sendMessage(chatId, filter.text, textOptions);
     }
   } catch (err) {
     console.error('Filter send error:', err);
