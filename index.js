@@ -313,15 +313,15 @@ bot.onText(/\/help/, async (msg) => {
       `/removeadmin - Hapus admin (reply ke orangnya)\n` +
       `/listadmins - Lihat semua admin\n\n` +
       `🎯 *Filter Management:*\n` +
-      `!add <nama> - Bikin filter baru (reply ke pesan)\n` +
-      `!del <nama> - Hapus filter\n` +
-      `!clone <dari> <ke> - Copy filter\n` +
-      `!rename <lama> <baru> - Ganti nama filter\n\n` +
+      `\`!add\` <nama> - Bikin filter baru (reply ke pesan)\n` +
+      `\`!del\` <nama> - Hapus filter\n` +
+      `\`!clone\` <dari> <ke> - Copy filter\n` +
+      `\`!rename\` <lama> <baru> - Ganti nama filter\n\n` +
       `🔍 *Filter Info:*\n` +
-      `!list - Lihat semua filter\n` +
-      `!info <nama> - Detail filter\n` +
-      `!search <kata> - Cari filter\n` +
-      `!status - Status & statistik bot\n` +
+      `\`!list\` - Lihat semua filter\n` +
+      `\`!info\` <nama> - Detail filter\n` +
+      `\`!search\` <kata> - Cari filter\n` +
+      `\`!status\` - Status & statistik bot\n` +
       `${isOwner(userId) ? '!export - Backup semua filter\n' : ''}` +
       `\n💡 *Cara Pake Filter:*\n` +
       `Ketik \`!namafilter\` atau \`namafilter\`\n\n` +
