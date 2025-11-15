@@ -98,6 +98,81 @@ async function saveJSON(file, data) {
   }
 }
 
+// CRITICAL FIX: Convert entities to HTML format
+// node-telegram-bot-api doesn't support caption_entities properly!
+// We need to convert entities to HTML and use parse_mode instead
+function entitiesToHTML(text, entities) {
+  if (!entities || entities.length === 0) return text;
+  
+  // Helper to escape HTML special chars in text content
+  function escapeHTML(str) {
+    return str.replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;');
+  }
+  
+  // Sort entities by offset (descending) to process from end to start
+  // This prevents offset shifting when inserting HTML tags
+  const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+  
+  let result = text;
+  
+  for (const entity of sortedEntities) {
+    const { offset, length, type, url } = entity;
+    const content = text.substring(offset, offset + length);
+    const escapedContent = escapeHTML(content); // Escape HTML in content
+    let replacement;
+    
+    switch (type) {
+      case 'bold':
+        replacement = `<b>${escapedContent}</b>`;
+        break;
+      case 'italic':
+        replacement = `<i>${escapedContent}</i>`;
+        break;
+      case 'underline':
+        replacement = `<u>${escapedContent}</u>`;
+        break;
+      case 'strikethrough':
+        replacement = `<s>${escapedContent}</s>`;
+        break;
+      case 'code':
+        replacement = `<code>${escapedContent}</code>`;
+        break;
+      case 'pre':
+        replacement = `<pre>${escapedContent}</pre>`;
+        break;
+      case 'text_link':
+        replacement = `<a href="${escapeHTML(url)}">${escapedContent}</a>`;
+        break;
+      case 'text_mention':
+        replacement = `<a href="tg://user?id=${entity.user.id}">${escapedContent}</a>`;
+        break;
+      case 'url':
+      case 'mention':
+      case 'hashtag':
+      case 'cashtag':
+      case 'bot_command':
+      case 'email':
+      case 'phone_number':
+        // These don't need HTML tags, they're auto-detected by Telegram
+        replacement = escapedContent;
+        break;
+      case 'spoiler':
+        replacement = `<tg-spoiler>${escapedContent}</tg-spoiler>`;
+        break;
+      default:
+        replacement = escapedContent;
+    }
+    
+    result = result.substring(0, offset) + replacement + result.substring(offset + length);
+  }
+  
+  // Escape remaining text parts that don't have entities
+  // This is already handled above, no need for extra escaping
+  return result;
+}
+
 // Optimized admin check with cache
 function isAdmin(userId) {
   return userId === OWNER_ID || adminCache.has(userId);
@@ -812,97 +887,122 @@ bot.on('message', async (msg) => {
     // Jika ada entities -> gunakan entities saja, JANGAN tambahkan parse_mode
     // Jika tidak ada entities -> gunakan parse_mode untuk fallback Markdown
 
-    const textOptions = {};
+    // CRITICAL FIX: Convert entities to HTML for text messages too
+    let formattedText = filter.text;
+    let textParseMode = null;
+    
     if (filter.entities && filter.entities.length > 0) {
-      // Ada entities -> gunakan entities ONLY, NO parse_mode
-      textOptions.entities = filter.entities;
+      // Convert entities to HTML format
+      formattedText = entitiesToHTML(filter.text, filter.entities);
+      textParseMode = 'HTML';
+      console.log('✅ Converted text entities to HTML');
     } else if (filter.text) {
-      // HANYA gunakan parse_mode jika TIDAK ADA entities sama sekali
-      textOptions.parse_mode = 'Markdown';
+      // Plain text - gunakan Markdown sebagai fallback
+      textParseMode = 'Markdown';
     }
 
-    const captionOptions = {};
-    // CRITICAL FIX: Prioritize caption_entities untuk media dengan caption
-    // JANGAN PERNAH campur entities dengan parse_mode - akan merusak offset!
+    // CRITICAL FIX: Convert entities to HTML since caption_entities doesn't work in node-telegram-bot-api
+    let formattedCaption = filter.text;
+    let captionParseMode = null;
+    
     if (filter.text && filter.text.trim().length > 0) {
       // Ada text/caption yang tidak kosong
       if (filter.caption_entities && filter.caption_entities.length > 0) {
-        // PRIORITY 1: Ada caption_entities -> gunakan ini untuk media caption
-        captionOptions.caption_entities = filter.caption_entities;
-        console.log('✅ Using caption_entities:', JSON.stringify(captionOptions.caption_entities, null, 2));
+        // PRIORITY 1: Convert caption_entities to HTML format
+        formattedCaption = entitiesToHTML(filter.text, filter.caption_entities);
+        captionParseMode = 'HTML';
+        console.log('✅ Converted caption_entities to HTML');
+        console.log('Original:', filter.text);
+        console.log('Formatted:', formattedCaption);
       } else if (filter.entities && filter.entities.length > 0) {
-        // PRIORITY 2: Fallback ke entities jika caption_entities tidak ada
-        // (untuk backward compatibility dengan filter lama)
-        captionOptions.caption_entities = filter.entities;
-        console.log('⚠️ Fallback to entities for caption:', JSON.stringify(captionOptions.caption_entities, null, 2));
+        // PRIORITY 2: Fallback ke entities untuk backward compatibility
+        formattedCaption = entitiesToHTML(filter.text, filter.entities);
+        captionParseMode = 'HTML';
+        console.log('⚠️ Converted entities to HTML (fallback)');
       } else {
-        // PRIORITY 3: Plain text - gunakan parse_mode sebagai fallback
-        captionOptions.parse_mode = 'Markdown';
-        console.log('ℹ️ Using parse_mode Markdown (no entities)');
+        // PRIORITY 3: Plain text - gunakan Markdown sebagai fallback
+        captionParseMode = 'Markdown';
+        console.log('ℹ️ Using plain text with Markdown fallback');
       }
     }
-    
-    console.log('📦 Final captionOptions:', JSON.stringify(captionOptions, null, 2));
 
     if (filter.photo) {
       const photoOptions = {};
-      // CRITICAL: Hanya set caption options jika caption benar-benar ada dan tidak kosong
-      if (filter.text && filter.text.trim().length > 0) {
-        photoOptions.caption = filter.text;
-        if (captionOptions.caption_entities && captionOptions.caption_entities.length > 0) {
-          photoOptions.caption_entities = captionOptions.caption_entities;
-        } else if (captionOptions.parse_mode) {
-          photoOptions.parse_mode = captionOptions.parse_mode;
+      if (formattedCaption && formattedCaption.trim().length > 0) {
+        photoOptions.caption = formattedCaption;
+        if (captionParseMode) {
+          photoOptions.parse_mode = captionParseMode;
         }
       }
-      
-      // DEBUG logging
-      console.log('📸 Sending photo with options:', JSON.stringify(photoOptions, null, 2));
+      console.log('📸 Sending photo with HTML caption:', photoOptions.caption);
       await bot.sendPhoto(chatId, filter.photo, photoOptions);
-    } else if (filter.video) {
-      const videoOptions = {
-        caption: filter.text || undefined,
-        ...captionOptions
-      };
       
-      // DEBUG logging
-      console.log('🎥 Sending video with options:', JSON.stringify(videoOptions, null, 2));
+    } else if (filter.video) {
+      const videoOptions = {};
+      if (formattedCaption && formattedCaption.trim().length > 0) {
+        videoOptions.caption = formattedCaption;
+        if (captionParseMode) {
+          videoOptions.parse_mode = captionParseMode;
+        }
+      }
+      console.log('🎥 Sending video with HTML caption:', videoOptions.caption);
       await bot.sendVideo(chatId, filter.video, videoOptions);
+      
     } else if (filter.animation) {
-      const animOptions = {
-        caption: filter.text || undefined,
-        ...captionOptions
-      };
-      console.log('🎞️ Sending animation with options:', JSON.stringify(animOptions, null, 2));
+      const animOptions = {};
+      if (formattedCaption && formattedCaption.trim().length > 0) {
+        animOptions.caption = formattedCaption;
+        if (captionParseMode) {
+          animOptions.parse_mode = captionParseMode;
+        }
+      }
+      console.log('🎞️ Sending animation with HTML caption');
       await bot.sendAnimation(chatId, filter.animation, animOptions);
+      
     } else if (filter.document) {
-      const docOptions = {
-        caption: filter.text || undefined,
-        ...captionOptions
-      };
-      console.log('📄 Sending document with options:', JSON.stringify(docOptions, null, 2));
+      const docOptions = {};
+      if (formattedCaption && formattedCaption.trim().length > 0) {
+        docOptions.caption = formattedCaption;
+        if (captionParseMode) {
+          docOptions.parse_mode = captionParseMode;
+        }
+      }
+      console.log('📄 Sending document with HTML caption');
       await bot.sendDocument(chatId, filter.document, docOptions);
+      
     } else if (filter.audio) {
-      const audioOptions = {
-        caption: filter.text || undefined,
-        ...captionOptions
-      };
-      console.log('🎵 Sending audio with options:', JSON.stringify(audioOptions, null, 2));
+      const audioOptions = {};
+      if (formattedCaption && formattedCaption.trim().length > 0) {
+        audioOptions.caption = formattedCaption;
+        if (captionParseMode) {
+          audioOptions.parse_mode = captionParseMode;
+        }
+      }
+      console.log('🎵 Sending audio with HTML caption');
       await bot.sendAudio(chatId, filter.audio, audioOptions);
+      
     } else if (filter.voice) {
-      const voiceOptions = {
-        caption: filter.text || undefined,
-        ...captionOptions
-      };
-      console.log('🎤 Sending voice with options:', JSON.stringify(voiceOptions, null, 2));
+      const voiceOptions = {};
+      if (formattedCaption && formattedCaption.trim().length > 0) {
+        voiceOptions.caption = formattedCaption;
+        if (captionParseMode) {
+          voiceOptions.parse_mode = captionParseMode;
+        }
+      }
+      console.log('🎤 Sending voice with HTML caption');
       await bot.sendVoice(chatId, filter.voice, voiceOptions);
     } else if (filter.sticker) {
       await bot.sendSticker(chatId, filter.sticker);
-      if (filter.text) {
-        await bot.sendMessage(chatId, filter.text, textOptions);
+      if (formattedText && formattedText.trim().length > 0) {
+        const msgOptions = {};
+        if (textParseMode) msgOptions.parse_mode = textParseMode;
+        await bot.sendMessage(chatId, formattedText, msgOptions);
       }
-    } else if (filter.text) {
-      await bot.sendMessage(chatId, filter.text, textOptions);
+    } else if (formattedText && formattedText.trim().length > 0) {
+      const msgOptions = {};
+      if (textParseMode) msgOptions.parse_mode = textParseMode;
+      console.log('💬 Sending text message with HTML formatting');
+      await bot.sendMessage(chatId, formattedText, msgOptions);
     }
   } catch (err) {
     console.error('❌ Filter send error:', err.message);
