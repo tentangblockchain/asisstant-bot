@@ -96,65 +96,75 @@ let spamTimeouts = new Map(); // Track user timeouts
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const AI_ENABLED = GROQ_API_KEY.length > 0;
 
-// Multi-model cascade system (AI Hoki) - OPTIMIZED
+// Multi-model cascade system (AI Hoki) - FULLY OPTIMIZED
 const AI_MODELS = [
+    // 🔥 TIER 1: PREMIUM - Complex queries, Admin priority
     {
         name: 'llama-3.3-70b-versatile',
-        dailyLimit: 1000,           // Request per hari
-        tokensPerDay: 100000,       // Token limit per hari
-        tokensPerMin: 12000,        // Token per menit
-        rpm: 30,                    // Request per menit
-        quality: 10,                // Quality score (1-10)
-        latency: 300,               // Average latency (ms)
+        rpm: 30,                    // Requests per minute
+        dailyLimit: 1000,           // 1K requests/day
+        tokensPerMin: 12000,        // 12K tokens/min
+        tokensPerDay: 100000,       // 100K tokens/day
+        quality: 10,                // Highest quality
+        latency: 300,               // ~300ms response time
         used: 0,                    // Daily counter
         rpmUsed: 0,                 // Per-minute counter
         lastReset: Date.now(),      // Last reset timestamp
-        tier: 1,                    // Priority tier
+        tier: 1,
         use: 'premium',
-        description: 'Best quality - Admin priority, complex queries'
+        description: 'Best quality - Complex reasoning, Admin priority',
+        ideal: 'Complex reasoning, long responses, admin queries'
     },
+    
+    // ⚡ TIER 2: FAST & UNLIMITED - General use, All users
     {
-        name: 'llama-3.1-8b-instant',
-        dailyLimit: 14400,
-        tokensPerDay: 500000,
-        tokensPerMin: 6000,
+        name: 'groq/compound-mini',
         rpm: 30,
-        quality: 7,
-        latency: 150,
+        dailyLimit: 250,
+        tokensPerMin: 70000,        // 70K tokens/min (MASSIVE!)
+        tokensPerDay: Infinity,     // No daily token limit! 🔥
+        quality: 8,                 // Good quality
+        latency: 150,               // Super fast ~150ms
         used: 0,
         rpmUsed: 0,
         lastReset: Date.now(),
         tier: 2,
         use: 'general',
-        description: 'Fast & balanced - All users, simple queries'
+        description: 'Fast & unlimited - All users, general queries',
+        ideal: 'Fast responses, simple-medium queries, high traffic'
     },
+    
+    // 🛡️ TIER 3: FALLBACK - Emergency backup
     {
-        name: 'llama-3.1-70b-versatile',  // Changed from guard model
-        dailyLimit: 1000,
-        tokensPerDay: 100000,
-        tokensPerMin: 12000,
+        name: 'llama-3.1-8b-instant',
         rpm: 30,
-        quality: 9,
-        latency: 250,
+        dailyLimit: 14400,          // 14.4K requests/day (HUGE!)
+        tokensPerMin: 6000,
+        tokensPerDay: 500000,       // 500K tokens/day
+        quality: 7,
+        latency: 100,               // Fastest ~100ms
         used: 0,
         rpmUsed: 0,
         lastReset: Date.now(),
         tier: 3,
         use: 'fallback',
-        description: 'Backup premium - When Tier 1 & 2 limited'
+        description: 'High capacity backup - Emergency fallback',
+        ideal: 'Backup when Tier 2 limited, high availability'
     }
 ];
 
-// Separate content moderation model
+// 🛡️ CONTENT MODERATION (Separate)
 const GUARD_MODEL = {
-    name: 'meta-llama/llama-guard-3-8b',
+    name: 'meta-llama/llama-guard-4-12b',
+    rpm: 30,
     dailyLimit: 14400,
     tokensPerMin: 15000,
-    rpm: 30,
+    tokensPerDay: 500000,
     used: 0,
     rpmUsed: 0,
     lastReset: Date.now(),
-    description: 'Content moderation - Filter harmful content'
+    use: 'moderation',
+    description: 'Filter harmful/inappropriate content'
 };
 
 // AI Model Router Class

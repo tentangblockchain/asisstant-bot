@@ -59,19 +59,23 @@ Bot Telegram profesional untuk manajemen admin dan filter dengan AI Assistant (H
 
 #### Model Tiers
 1. **Tier 1 (Premium)** - `llama-3.3-70b-versatile` 
-- Quality: 10/10
-- Limit: 1,000 req/hour
-- Access: Admin priority
+   - Quality: 10/10
+   - Limit: 1,000 req/day | 12K tokens/min
+   - Access: Admin priority, complex queries
 
-2. **Tier 2 (General)** - `llama-3.1-8b-instant`
-- Quality: 7/10
-- Limit: 14,400 req/hour
-- Access: All users
+2. **Tier 2 (General)** - `groq/compound-mini` ⭐ STAR
+   - Quality: 8/10
+   - Limit: 250 req/day | **70K tokens/min** | **UNLIMITED daily tokens**
+   - Access: All users (handles 85% traffic)
 
-3. **Tier 3 (Fallback)** - `llama-guard-3-8b`
-- Quality: 6/10
-- Limit: 14,400 req/hour
-- Access: Emergency backup
+3. **Tier 3 (Fallback)** - `llama-3.1-8b-instant`
+   - Quality: 7/10
+   - Limit: 14,400 req/day | 6K tokens/min
+   - Access: Emergency backup, overflow
+
+4. **Guard Model** - `meta-llama/llama-guard-4-12b`
+   - Purpose: Content moderation
+   - Limit: 14,400 req/day | 15K tokens/min
 
 #### Smart Triggering
 - **Private Chat** - AI responds to ALL messages
