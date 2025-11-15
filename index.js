@@ -1098,15 +1098,14 @@ bot.on('message', async (msg) => {
   if (isBlacklisted(userId)) return;
   if (isTimedOut(userId)) return;
   
-  // Smart triggering: Only respond if bot is mentioned or replied to
+  // Smart triggering: Only respond if replied to bot (no need to mention)
   const botInfo = await bot.getMe();
-  const isMentioned = msg.text.includes(`@${botInfo.username}`);
   const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.id === botInfo.id;
   
-  if (!isMentioned && !isReplyToBot) return;
+  if (!isReplyToBot) return;
   
-  // Extract message (remove bot mention)
-  let userMessage = msg.text.replace(`@${botInfo.username}`, '').trim();
+  // Get user message
+  let userMessage = msg.text.trim();
   if (!userMessage || userMessage.length < 2) return;
   
   // AI-specific rate limiting (cooldown per user)
