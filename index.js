@@ -775,26 +775,36 @@ bot.on('message', async (msg) => {
     const captionOptions = {};
     // CRITICAL: JANGAN PERNAH campur entities dengan parse_mode!
     // parse_mode akan rewrite text dan merusak offset entities
-    if (filter.caption_entities && filter.caption_entities.length > 0) {
-      // Ada caption_entities -> HANYA gunakan caption_entities, NO parse_mode
-      captionOptions.caption_entities = filter.caption_entities;
-      // STOP disini, jangan tambahkan parse_mode
-    } else if (filter.entities && filter.entities.length > 0) {
-      // Tidak ada caption_entities tapi ada entities -> gunakan entities untuk caption
-      captionOptions.caption_entities = filter.entities;
-      // STOP disini, jangan tambahkan parse_mode
-    } else if (filter.text) {
-      // HANYA gunakan parse_mode jika TIDAK ADA entities/caption_entities
-      captionOptions.parse_mode = 'Markdown';
+    if (filter.text) {
+      // Ada text/caption
+      if (filter.caption_entities && filter.caption_entities.length > 0) {
+        // Ada caption_entities -> HANYA gunakan caption_entities, NO parse_mode
+        captionOptions.caption_entities = filter.caption_entities;
+      } else if (filter.entities && filter.entities.length > 0) {
+        // Tidak ada caption_entities tapi ada entities -> gunakan entities untuk caption
+        captionOptions.caption_entities = filter.entities;
+      } else {
+        // HANYA gunakan parse_mode jika TIDAK ADA entities/caption_entities
+        captionOptions.parse_mode = 'Markdown';
+      }
     }
 
     if (filter.photo) {
       // Debug logging
       console.log(`[Filter: ${filterName}] Sending photo with caption options:`, captionOptions);
-      await bot.sendPhoto(chatId, filter.photo, {
-        caption: filter.text || undefined,
-        ...captionOptions
-      });
+      
+      const photoOptions = {};
+      if (filter.text) {
+        photoOptions.caption = filter.text;
+        // HANYA tambahkan caption_entities jika ada DAN caption tidak kosong
+        if (captionOptions.caption_entities) {
+          photoOptions.caption_entities = captionOptions.caption_entities;
+        } else if (captionOptions.parse_mode) {
+          photoOptions.parse_mode = captionOptions.parse_mode;
+        }
+      }
+      
+      await bot.sendPhoto(chatId, filter.photo, photoOptions);
     } else if (filter.video) {
       await bot.sendVideo(chatId, filter.video, {
         caption: filter.text || undefined,
