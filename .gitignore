@@ -20,3 +20,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
+attached_assets/
+node_modules/
+admin.json
+filters.json
+replit.md
