@@ -1047,8 +1047,8 @@ bot.onText(/^!info\s+(\w+)/, async (msg, match) => {
 
   const reply = await bot.sendMessage(chatId, infoMsg, {
     parse_mode: 'Markdown'
-
-
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
 // 🤖 AI HOKI HANDLER
@@ -1177,10 +1177,6 @@ bot.onText(/^!aireset/, async (msg) => {
   };
 
   const reply = await bot.sendMessage(chatId, '✅ AI stats & conversations berhasil di-reset!');
-  autoDeleteMessage(chatId, reply.message_id, 5);
-});
-
-  });
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
