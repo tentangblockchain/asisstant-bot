@@ -1049,6 +1049,8 @@ bot.onText(/^!info\s+(\w+)/, async (msg, match) => {
     parse_mode: 'Markdown'
 
 
+});
+
 // 🤖 AI HOKI HANDLER
 bot.on('message', async (msg) => {
   if (!AI_ENABLED) return;
