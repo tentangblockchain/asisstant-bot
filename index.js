@@ -152,6 +152,65 @@ function createPaginationKeyboard(currentPage, totalPages, prefix) {
 bot.onText(/\/addadmin(?:@\w+)?/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
+
+
+// 📖 HELP & START COMMANDS
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+  const firstName = msg.from.first_name || 'User';
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  const welcomeMsg = `👋 Halo *${firstName}*!\n\n` +
+    `Gua bot admin & filter management.\n\n` +
+    `🔹 Ketik /help untuk lihat semua command\n` +
+    `${isAdmin(userId) ? '🔹 Lu admin, bisa pake semua fitur! 👑' : '🔹 Lu bukan admin, cuma bisa pake filter'}`;
+
+  const reply = await bot.sendMessage(chatId, welcomeMsg, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+bot.onText(/\/help/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const messageId = msg.message_id;
+
+  autoDeleteMessage(chatId, messageId, 3);
+
+  let helpMsg = `📖 *Daftar Command Bot*\n\n`;
+
+  if (isAdmin(userId)) {
+    helpMsg += `👑 *Admin Commands:*\n` +
+      `/addadmin - Tambah admin (reply ke orangnya)\n` +
+      `/removeadmin - Hapus admin (reply ke orangnya)\n` +
+      `/listadmins - Lihat semua admin\n\n` +
+      `🎯 *Filter Commands:*\n` +
+      `!add <nama> - Bikin filter baru (reply ke pesan)\n` +
+      `!del <nama> - Hapus filter\n` +
+      `!list - Lihat semua filter\n` +
+      `!status - Cek status bot\n\n` +
+      `💡 *Cara Pake Filter:*\n` +
+      `Ketik \`!namafilter\` atau \`namafilter\`\n\n` +
+      `📌 *Media Support:*\n` +
+      `Text, Photo, Video, Document, GIF, Audio, Voice, Sticker`;
+  } else {
+    helpMsg += `💡 *Cara Pake Filter:*\n` +
+      `Ketik \`!namafilter\` atau \`namafilter\`\n\n` +
+      `📌 Lu bukan admin, cuma bisa pake filter yang udah ada.\n` +
+      `Ketik !list untuk lihat daftar filter (kalo admin udah set).`;
+  }
+
+  const reply = await bot.sendMessage(chatId, helpMsg, {
+    parse_mode: 'Markdown'
+  });
+  autoDeleteMessage(chatId, reply.message_id, 5);
+});
+
+
   const messageId = msg.message_id;
 
   autoDeleteMessage(chatId, messageId, 3);
