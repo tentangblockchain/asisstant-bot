@@ -10,7 +10,7 @@ if (!process.env.BOT_TOKEN) {
 }
 
 if (!process.env.WEBHOOK_URL) {
-  console.error('❌ WEBHOOK_URL not set! Example: https://your-repl.replit.app');
+  console.error('❌ WEBHOOK_URL not set! Example: https://bukitcuan.fun');
   process.exit(1);
 }
 
