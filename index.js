@@ -944,11 +944,10 @@ bot.on('message', async (msg) => {
         formattedCaption = entitiesToHTML(filter.text, filter.entities);
         captionParseMode = 'HTML';
         console.log('⚠️ Converted entities to HTML (fallback)');
-      } else {
-        // PRIORITY 3: Plain text - gunakan Markdown sebagai fallback
-        captionParseMode = 'Markdown';
-        console.log('ℹ️ Using plain text with Markdown fallback');
       }
+      // NO FALLBACK to Markdown for plain text - send as-is without parse_mode
+      // Markdown fallback would break text with special chars like _, *, [, etc
+      // captionParseMode remains null for plain text
     }
 
     if (filter.photo) {
