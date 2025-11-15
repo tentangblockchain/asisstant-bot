@@ -1677,7 +1677,7 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// Optimized filter trigger handler
+// Optimized filter trigger handler with keyword detection
 bot.on('message', async (msg) => {
   if (!msg.text) return;
   if (msg.text.startsWith('/')) return;
@@ -1685,15 +1685,52 @@ bot.on('message', async (msg) => {
       msg.text.startsWith('!list') || msg.text.startsWith('!status')) return;
 
   const chatId = msg.chat.id;
-  let filterName;
+  const lowerText = msg.text.toLowerCase();
+  let filterName = null;
+  let filter = null;
 
+  // Priority 1: Exact match dengan ! prefix (command style)
   if (msg.text.startsWith('!')) {
-    filterName = msg.text.substring(1).trim().toLowerCase();
-  } else {
-    filterName = msg.text.trim().toLowerCase();
+    const exactName = msg.text.substring(1).trim().toLowerCase();
+    if (filters[exactName]) {
+      filterName = exactName;
+      filter = filters[exactName];
+    }
+  }
+  
+  // Priority 2: Exact match tanpa ! (jika seluruh pesan adalah nama filter)
+  if (!filter) {
+    const exactName = msg.text.trim().toLowerCase();
+    if (filters[exactName]) {
+      filterName = exactName;
+      filter = filters[exactName];
+    }
+  }
+  
+  // Priority 3: Keyword detection dalam pesan panjang (cari filter pertama yang match)
+  if (!filter) {
+    // Dapatkan semua filter names
+    const allFilterNames = Object.keys(filters);
+    
+    // Cari filter pertama yang muncul di text (by position)
+    let earliestPosition = Infinity;
+    let earliestFilter = null;
+    
+    for (const fname of allFilterNames) {
+      const position = lowerText.indexOf(fname);
+      if (position !== -1 && position < earliestPosition) {
+        earliestPosition = position;
+        earliestFilter = fname;
+      }
+    }
+    
+    if (earliestFilter) {
+      filterName = earliestFilter;
+      filter = filters[earliestFilter];
+    }
   }
 
-  const filter = filters[filterName];
+  // Jika tidak ada filter yang match, skip
   if (!filter) return;
 
   // Security: Check blacklist dan timeout
