@@ -1241,26 +1241,53 @@ bot.onText(/^!health/, async (msg) => {
   });
 });
 
+// Retry helper for slow connections
+async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 2000) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === maxRetries - 1) throw err;
+      const delay = initialDelay * Math.pow(2, i);
+      console.log(`⏳ Retry ${i + 1}/${maxRetries} in ${delay/1000}s...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
 // Validate bot token and delete webhook before polling
 async function validateBotToken() {
   try {
     console.log('🔍 Validating bot token...');
     
-    // CRITICAL: Delete webhook to prevent conflicts with polling
+    // Try to delete webhook with retries (not critical if fails)
     try {
-      await bot.deleteWebHook();
+      await retryWithBackoff(async () => {
+        await bot.deleteWebHook();
+      }, 3, 3000);
       console.log('✅ Webhook deleted (polling mode)');
     } catch (err) {
-      console.log('⚠️ Could not delete webhook:', err.message);
+      console.log('⚠️ Could not delete webhook (will continue anyway):', err.code || err.message);
+      console.log('💡 Bot will still work, but may have slower startup');
     }
     
-    const me = await bot.getMe();
+    // Validate token with retries for slow connection
+    const me = await retryWithBackoff(async () => {
+      return await bot.getMe();
+    }, 5, 3000);
+    
     console.log(`✅ Bot token valid! Connected as: @${me.username}`);
     return true;
   } catch (err) {
-    console.error('❌ Bot token validation failed:', err.message);
-    console.error('\n💡 Pastikan BOT_TOKEN di .env file benar!');
-    console.error('   Dapatkan token baru dari @BotFather di Telegram');
+    console.error('❌ Bot token validation failed:', err.code || err.message);
+    console.error('\n💡 Possible issues:');
+    console.error('   1. BOT_TOKEN tidak valid - cek di .env file');
+    console.error('   2. Koneksi internet terlalu lambat/tidak stabil');
+    console.error('   3. Telegram API unreachable dari network kamu');
+    console.error('\n🔧 Solusi:');
+    console.error('   - Pastikan BOT_TOKEN benar (@BotFather)');
+    console.error('   - Coba gunakan koneksi internet yang lebih stabil');
+    console.error('   - Tunggu beberapa saat dan coba lagi');
     return false;
   }
 }
