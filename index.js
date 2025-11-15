@@ -51,12 +51,12 @@ async function initializeData() {
   try {
     admins = await loadJSON(ADMINS_FILE, []);
     filters = await loadJSON(FILTERS_FILE, {});
-    
+
     if (OWNER_ID && !admins.includes(OWNER_ID)) {
       admins.push(OWNER_ID);
       await saveJSON(ADMINS_FILE, admins);
     }
-    
+
     // Build admin cache
     adminCache = new Set(admins);
     console.log('✅ Data initialized successfully');
@@ -101,14 +101,14 @@ function isOwner(userId) {
 function checkRateLimit(userId) {
   const now = Date.now();
   const userLimits = rateLimits.get(userId) || [];
-  
+
   // Remove old entries
   const validLimits = userLimits.filter(time => now - time < RATE_LIMIT_WINDOW);
-  
+
   if (validLimits.length >= MAX_REQUESTS) {
     return false;
   }
-  
+
   validLimits.push(now);
   rateLimits.set(userId, validLimits);
   return true;
@@ -117,17 +117,17 @@ function checkRateLimit(userId) {
 // Optimized auto-delete with cleanup
 function autoDeleteMessage(chatId, messageId, delayMinutes = 3) {
   const key = `${chatId}_${messageId}`;
-  
+
   // Clear existing timer if any
   if (deleteTimers.has(key)) {
     clearTimeout(deleteTimers.get(key));
   }
-  
+
   const timer = setTimeout(() => {
     bot.deleteMessage(chatId, messageId).catch(() => {});
     deleteTimers.delete(key);
   }, delayMinutes * 60 * 1000);
-  
+
   deleteTimers.set(key, timer);
 }
 
@@ -137,28 +137,28 @@ function createPagination(items, page, itemsPerPage = 10) {
   const start = (page - 1) * itemsPerPage;
   const end = start + itemsPerPage;
   const pageItems = items.slice(start, end);
-  
+
   return { pageItems, totalPages, currentPage: page };
 }
 
 function createPaginationKeyboard(currentPage, totalPages, prefix) {
   const keyboard = [];
   const buttons = [];
-  
+
   if (currentPage > 1) {
     buttons.push({ text: '⬅️ Prev', callback_data: `${prefix}_${currentPage - 1}` });
   }
-  
+
   buttons.push({ text: `${currentPage}/${totalPages}`, callback_data: 'noop' });
-  
+
   if (currentPage < totalPages) {
     buttons.push({ text: 'Next ➡️', callback_data: `${prefix}_${currentPage + 1}` });
   }
-  
+
   if (buttons.length > 0) {
     keyboard.push(buttons);
   }
-  
+
   return { inline_keyboard: keyboard };
 }
 
@@ -339,7 +339,7 @@ bot.onText(/\/listadmins/, async (msg) => {
 
   const ownerInfo = `👑 *Owner (Admin Utama):*\nUser ID: \`${OWNER_ID}\`\n\n`;
   const otherAdmins = admins.filter(id => id !== OWNER_ID);
-  
+
   let adminList = ownerInfo;
   if (otherAdmins.length > 0) {
     adminList += `👥 *Admin Lainnya:*\n`;
@@ -380,7 +380,7 @@ bot.onText(/^!add\s+(\w+)/, async (msg, match) => {
   }
 
   const replyMsg = msg.reply_to_message;
-  
+
   // Simpan entities HANYA jika ada, dan dalam format yang benar
   const filterData = {
     text: replyMsg.text || replyMsg.caption || '',
@@ -469,16 +469,16 @@ bot.onText(/^!list/, async (msg) => {
 
   const { pageItems, totalPages, currentPage } = createPagination(filterNames, 1, 15);
   const filterList = pageItems.map((name, i) => `${i + 1}. \`!${name}\` atau \`${name}\``).join('\n');
-  
+
   let message = `🎯 *Daftar Filter (${filterNames.length} total):*\n\n${filterList}`;
-  
+
   const keyboard = totalPages > 1 ? createPaginationKeyboard(currentPage, totalPages, 'filters') : null;
-  
+
   const reply = await bot.sendMessage(chatId, message, {
     parse_mode: 'Markdown',
     reply_markup: keyboard
   });
-  
+
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
@@ -591,7 +591,7 @@ bot.onText(/^!export/, async (msg) => {
 
     const exportJson = JSON.stringify(exportData, null, 2);
     const filename = `filters_backup_${Date.now()}.json`;
-    
+
     await bot.sendDocument(chatId, Buffer.from(exportJson), {
       caption: `✅ *Backup Filters*\n\n` +
         `📦 Total: ${Object.keys(filters).length} filters\n` +
@@ -718,23 +718,23 @@ bot.on('callback_query', async (query) => {
   if (data.startsWith('filters_')) {
     const page = parseInt(data.split('_')[1]);
     const filterNames = Object.keys(filters);
-    
+
     const { pageItems, totalPages, currentPage } = createPagination(filterNames, page, 15);
     const filterList = pageItems.map((name, i) => {
       const num = (page - 1) * 15 + i + 1;
       return `${num}. \`!${name}\` atau \`${name}\``;
     }).join('\n');
-    
+
     const message = `🎯 *Daftar Filter (${filterNames.length} total):*\n\n${filterList}`;
     const keyboard = createPaginationKeyboard(currentPage, totalPages, 'filters');
-    
+
     bot.editMessageText(message, {
       chat_id: chatId,
       message_id: messageId,
       parse_mode: 'Markdown',
       reply_markup: keyboard
     }).catch(() => {});
-    
+
     bot.answerCallbackQuery(query.id);
   }
 });
@@ -748,7 +748,7 @@ bot.on('message', async (msg) => {
 
   const chatId = msg.chat.id;
   let filterName;
-  
+
   if (msg.text.startsWith('!')) {
     filterName = msg.text.substring(1).trim().toLowerCase();
   } else {
@@ -762,7 +762,7 @@ bot.on('message', async (msg) => {
     // CRITICAL: entities dan parse_mode TIDAK BISA digunakan bersamaan di Telegram API!
     // Jika ada entities -> gunakan entities saja, JANGAN tambahkan parse_mode
     // Jika tidak ada entities -> gunakan parse_mode untuk fallback Markdown
-    
+
     const textOptions = {};
     if (filter.entities && filter.entities.length > 0) {
       // Ada entities -> gunakan entities ONLY, NO parse_mode
@@ -792,7 +792,7 @@ bot.on('message', async (msg) => {
     if (filter.photo) {
       // Debug logging
       console.log(`[Filter: ${filterName}] Sending photo with caption options:`, captionOptions);
-      
+
       const photoOptions = {};
       if (filter.text) {
         photoOptions.caption = filter.text;
@@ -803,7 +803,7 @@ bot.on('message', async (msg) => {
           photoOptions.parse_mode = captionOptions.parse_mode;
         }
       }
-      
+
       await bot.sendPhoto(chatId, filter.photo, photoOptions);
     } else if (filter.video) {
       await bot.sendVideo(chatId, filter.video, {
@@ -912,7 +912,7 @@ bot.onText(/^!status/, async (msg) => {
 // Enhanced error handling
 bot.on('polling_error', (error) => {
   console.error('⚠️ Polling error:', error.code, error.message);
-  
+
   // Auto-recovery untuk network errors
   if (error.code === 'EFATAL' || error.code === 'ETELEGRAM') {
     console.log('🔄 Attempting to recover...');
@@ -925,14 +925,14 @@ bot.on('polling_error', (error) => {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down gracefully...');
-  
+
   // Clear all timers
   deleteTimers.forEach(timer => clearTimeout(timer));
   deleteTimers.clear();
-  
+
   // Stop polling
   await bot.stopPolling();
-  
+
   console.log('👋 Bot stopped');
   process.exit(0);
 });
