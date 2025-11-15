@@ -5,6 +5,22 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const dns = require('dns');
+const https = require('https');
+
+// ============ IPv4 FIX - FORCE IPv4 ONLY ============
+// Force IPv4 untuk mengatasi masalah timeout IPv6
+dns.setDefaultResultOrder('ipv4first');
+
+const httpsAgent = new https.Agent({
+  family: 4,  // Force IPv4 only
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  timeout: 120000  // 2 minutes
+});
+
+console.log('🌐 Menggunakan konfigurasi IPv4-only untuk koneksi Telegram API');
+// =====================================================
 
 // Validate environment variables
 if (!process.env.BOT_TOKEN) {
@@ -17,7 +33,7 @@ if (!process.env.OWNER_ID) {
   process.exit(1);
 }
 
-// Initialize bot with optimized settings for slow internet
+// Initialize bot with optimized settings for slow internet + IPv4-only
 const bot = new TelegramBot(process.env.BOT_TOKEN, { 
   polling: {
     interval: 5000, // Slower polling (5 seconds)
@@ -28,6 +44,7 @@ const bot = new TelegramBot(process.env.BOT_TOKEN, {
   },
   filepath: false,
   request: {
+    agent: httpsAgent, // Use IPv4-only HTTPS agent
     agentOptions: {
       keepAlive: true,
       keepAliveMsecs: 30000,
