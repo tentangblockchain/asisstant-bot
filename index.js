@@ -17,16 +17,23 @@ if (!process.env.OWNER_ID) {
   process.exit(1);
 }
 
-// Initialize bot with optimized settings and better error handling
+// Initialize bot with optimized settings for slow internet
 const bot = new TelegramBot(process.env.BOT_TOKEN, { 
   polling: {
-    interval: 1000,
-    autoStart: false, // We'll start manually after validation
+    interval: 3000, // Slower polling for slow internet (3 seconds)
+    autoStart: false,
     params: {
-      timeout: 30
+      timeout: 60 // Increased timeout from 30 to 60 seconds
     }
   },
-  filepath: false // Disable file downloads to prevent issues
+  filepath: false,
+  request: {
+    agentOptions: {
+      keepAlive: true,
+      keepAliveMsecs: 10000
+    },
+    forever: true // Keep connections alive
+  }
 });
 
 const OWNER_ID = parseInt(process.env.OWNER_ID);
@@ -1149,41 +1156,44 @@ bot.onText(/^!status/, async (msg) => {
   autoDeleteMessage(chatId, reply.message_id, 5);
 });
 
-// Enhanced error handling with exponential backoff
+// Enhanced error handling for slow internet
 let pollingErrorCount = 0;
 let lastErrorTime = 0;
-const MAX_RETRY_ATTEMPTS = 5;
+const MAX_RETRY_ATTEMPTS = 10; // More attempts for slow internet
 
 bot.on('polling_error', (error) => {
   const now = Date.now();
   
   console.error('⚠️ Polling error:', error.code, error.message);
   
-  // Reset counter if last error was more than 1 minute ago
-  if (now - lastErrorTime > 60000) {
+  // Reset counter if last error was more than 2 minutes ago
+  if (now - lastErrorTime > 120000) {
     pollingErrorCount = 0;
   }
   
   lastErrorTime = now;
   pollingErrorCount++;
   
-  // Stop retrying after max attempts
-  if (pollingErrorCount >= MAX_RETRY_ATTEMPTS) {
+  // Don't exit immediately on network errors for slow connections
+  const isNetworkError = error.code === 'EFATAL' || 
+                         error.code === 'ETELEGRAM' || 
+                         error.code === 'ETIMEDOUT' ||
+                         error.message.includes('getUpdates');
+  
+  if (pollingErrorCount >= MAX_RETRY_ATTEMPTS && !isNetworkError) {
     console.error('❌ Max retry attempts reached. Possible issues:');
     console.error('   1. BOT_TOKEN tidak valid');
-    console.error('   2. Network/firewall memblokir Telegram API');
-    console.error('   3. Bot instance lain menggunakan token yang sama');
+    console.error('   2. Bot instance lain menggunakan token yang sama');
     console.error('\n💡 Solusi:');
     console.error('   - Cek BOT_TOKEN di .env');
     console.error('   - Stop bot instance lain yang menggunakan token ini');
-    console.error('   - Pastikan koneksi internet stabil');
     process.exit(1);
   }
   
-  // Exponential backoff: 2s, 4s, 8s, 16s, 32s
-  const backoffDelay = Math.min(2000 * Math.pow(2, pollingErrorCount - 1), 32000);
+  // Longer backoff for slow internet: 5s, 10s, 15s, 20s, max 30s
+  const backoffDelay = Math.min(5000 * Math.min(pollingErrorCount, 6), 30000);
   
-  console.log(`🔄 Retry attempt ${pollingErrorCount}/${MAX_RETRY_ATTEMPTS} in ${backoffDelay/1000}s...`);
+  console.log(`🔄 Retry ${pollingErrorCount}/${MAX_RETRY_ATTEMPTS} in ${backoffDelay/1000}s (slow internet mode)...`);
   
   setTimeout(() => {
     bot.stopPolling().then(() => {
@@ -1231,10 +1241,19 @@ bot.onText(/^!health/, async (msg) => {
   });
 });
 
-// Validate bot token before starting
+// Validate bot token and delete webhook before polling
 async function validateBotToken() {
   try {
     console.log('🔍 Validating bot token...');
+    
+    // CRITICAL: Delete webhook to prevent conflicts with polling
+    try {
+      await bot.deleteWebHook();
+      console.log('✅ Webhook deleted (polling mode)');
+    } catch (err) {
+      console.log('⚠️ Could not delete webhook:', err.message);
+    }
+    
     const me = await bot.getMe();
     console.log(`✅ Bot token valid! Connected as: @${me.username}`);
     return true;
